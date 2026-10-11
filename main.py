@@ -127,6 +127,10 @@ async def plan_page(_: Request):
     return FileResponse("miniapp/plan.html", media_type="text/html")
 
 
+async def cet4_json_api(_: Request):
+    return FileResponse("miniapp/cet4.json", media_type="application/json")
+
+
 async def telegram_webhook(request: Request):
     secret = request.headers.get("x-telegram-bot-api-secret-token", "")
     if not TG_WEBHOOK_SECRET or not hmac.compare_digest(secret, TG_WEBHOOK_SECRET):
@@ -482,6 +486,7 @@ app = Starlette(routes=[
     Route("/health", health, methods=["GET"]),
     Route("/miniapp", miniapp, methods=["GET"]),
     Route("/plan", plan_page, methods=["GET"]),
+    Route("/cet4.json", cet4_json_api, methods=["GET"]),
     Route("/webhook", telegram_webhook, methods=["POST"]),
     WebSocketRoute("/qq-ws", __import__("qq_bot").websocket_endpoint),
     Route("/admin/config", admin_config, methods=["GET", "PUT"]),
