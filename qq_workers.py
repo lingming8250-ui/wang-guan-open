@@ -25,6 +25,18 @@ def _segments(text):
     if text[pos:]:seg.append({"type":"text","data":{"text":text[pos:]}})
     return seg if (reply or _AT_RE.search(text)) else text.strip()
 
+def _split_into_bubbles(text: str) -> list[str]:
+    # 优先按换行拆，如果没换行但句子很长，按标点或多空格切开
+    lines = [c.strip() for c in re.split(r'\n+', text) if c.strip()]
+    bubbles = []
+    for line in lines:
+        if len(line) > 35 and (' ' in line or '？' in line or '！' in line or '。' in line):
+            sub = [s.strip() for s in re.split(r'[？！。]| {2,}', line) if s.strip()]
+            bubbles.extend(sub if sub else [line])
+        else:
+            bubbles.append(line)
+    return bubbles or [text.strip()]
+
 async def _tool_chat(messages,max_rounds=3):
     for _ in range(max_rounds):
         text,calls=await call_llm(messages,tools=TOOL_SCHEMAS,channel="qq")
@@ -49,15 +61,15 @@ async def _private_reply():
         await asyncio.sleep(random.uniform(4.0,5.5));from qq_bot import send_qq_msg
         hist=recent("message",30,with_ids=True);reply=(await _tool_chat([{"role":"system","content":build_context()}]+hist)).strip()
         if not reply:return
-        # 按换行切成独立气泡逐条发送
-        chunks=[c.strip() for c in re.split(r'\n+',reply) if c.strip()]
+        # 智能切成多个自然独立气泡
+        chunks=_split_into_bubbles(reply)
         for i,chunk in enumerate(chunks):
             clean=_REPLY_RE.sub('',_AT_RE.sub('',chunk)).strip()
             if clean:
                 save_message("assistant",clean,scene="message",source="qq")
                 await send_qq_msg("private",int(OWNER_ID),_segments(chunk))
                 if i<len(chunks)-1:
-                    await asyncio.sleep(random.uniform(1.0,2.2))
+                    await asyncio.sleep(random.uniform(1.2,2.4))
     except asyncio.CancelledError:pass
     finally:
         if _private_pending is asyncio.current_task():_private_pending=None
@@ -70,7 +82,7 @@ async def _group_reply(gid,force=False):
         instruction=GROUP_CHAT_EXAMPLE+("\nYou were directly mentioned and must reply; do not output PASS." if force else "")
         reply=(await _tool_chat([{"role":"system","content":instruction+"\n\n"+build_context()}]+hist)).strip()
         if not reply or (not force and re.search(r'\bPASS\b',reply,re.I)):return
-        chunks=[c.strip() for c in re.split(r'\n+',reply) if c.strip()]
+        chunks=_split_into_bubbles(reply)
         for i,chunk in enumerate(chunks):
             clean=_REPLY_RE.sub('',_AT_RE.sub('',chunk)).strip()
             if clean:
@@ -83,7 +95,6 @@ async def _group_reply(gid,force=False):
         if _group_pending.get(gid) is task:_group_pending.pop(gid,None)
 
 async def _parse_images_and_text(data):
-    # 处理 Array 和 CQ 码两种消息格式中的图片
     raw = data.get("raw_message", "") or ""
     message = data.get("message")
     img_urls = []
@@ -96,7 +107,6 @@ async def _parse_images_and_text(data):
                 if u and str(u).startswith("http"):
                     img_urls.append(str(u))
                 elif d.get("file"):
-                    # 如果不是http链接，尝试通过 OneBot get_image API 获取真实下载地址
                     try:
                         from qq_bot import get_image
                         img_info = await get_image(d.get("file"))
@@ -104,7 +114,6 @@ async def _parse_images_and_text(data):
                             img_urls.append(img_info["url"])
                     except Exception:pass
     else:
-        # 正则兜底解析 CQ 码
         for m in re.finditer(r'\[CQ:image,[^\]]*?(?:url=([^,\]]+)|file=([^,\]]+))[^\]]*?\]', raw, re.I):
             u = m.group(1) or m.group(2)
             if u and u.startswith("http"):
@@ -134,7 +143,6 @@ async def handle_event(data):
         text=await _parse_images_and_text(data)
         if not text:return
         save_message("user",f"[QQ] {text}",scene="message",source="qq",message_id=mid)
-        # 只要用户还在发新消息，就打断之前的待发送任务，重新计时
         if _private_pending and not _private_pending.done():_private_pending.cancel()
         _private_pending=asyncio.create_task(_private_reply());return
     if typ!="group":return
