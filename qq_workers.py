@@ -26,27 +26,20 @@ def _segments(text):
     return seg if (reply or _AT_RE.search(text)) else text.strip()
 
 def _split_into_bubbles(text: str) -> list[str]:
-    # 严格按照自然口语，每次只发 1~2 个独立气泡
-    raw = [c.strip() for c in re.split(r'[\r\n]+', text) if c.strip()]
-    if not raw:
-        return [text.strip()]
+    # 强制将大长句切成一句话一个气泡（按换行、空格、逗号句号标点等切碎）
+    # 只要包含两个以上空格或标点，一律拆开
+    parts = re.split(r'[\r\n]+|[，,。？！?!~…]+|\s{2,}', text)
     bubbles = []
-    for line in raw:
-        if len(line) <= 20:
-            bubbles.append(line)
+    for p in parts:
+        p = p.strip()
+        if not p:
+            continue
+        # 如果单段依然很长（大于14字），顺着任意单个空格拆
+        if len(p) > 14 and ' ' in p:
+            sub = [s.strip() for s in p.split(' ') if s.strip()]
+            bubbles.extend(sub)
         else:
-            parts = [p.strip() for p in re.split(r'(?<=[，,。？！?!~…])', line) if p.strip()]
-            cur = ""
-            for p in parts:
-                if not cur:
-                    cur = p
-                elif len(cur) + len(p) <= 22:
-                    cur += p
-                else:
-                    bubbles.append(cur.strip())
-                    cur = p
-            if cur.strip():
-                bubbles.append(cur.strip())
+            bubbles.append(p)
     clean = [b for b in bubbles if re.search(r'[\w\u4e00-\u9fa5]', b)]
     return clean or [text.strip()]
 
@@ -80,7 +73,7 @@ async def _private_reply():
                 save_message("assistant",clean,scene="message",source="qq")
                 await send_qq_msg("private",int(OWNER_ID),_segments(chunk))
                 if i<len(chunks)-1:
-                    await asyncio.sleep(random.uniform(1.0,1.8))
+                    await asyncio.sleep(random.uniform(1.2,2.0))
     except asyncio.CancelledError:pass
     finally:
         if _private_pending is asyncio.current_task():_private_pending=None
