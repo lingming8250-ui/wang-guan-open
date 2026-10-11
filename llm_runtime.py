@@ -1,6 +1,6 @@
 """Unified streaming OpenAI-compatible LLM caller used by bots and background tasks."""
 from __future__ import annotations
-import json, logging, httpx
+import json, logging, re, httpx
 from llm_channels import get_config, record_result, clear_cache
 
 log=logging.getLogger(__name__)
@@ -38,7 +38,11 @@ async def call_llm(messages:list,max_tokens:int=4096,tools:list|None=None,extra_
                     choices=d.get("choices") or []
                     if not choices:continue
                     delta=choices[0].get("delta") or {}
-                    if delta.get("content"):content.append(delta["content"])
+                    # 严格屏蔽思考内容
+                    if delta.get("reasoning_content"):
+                        continue
+                    if delta.get("content"):
+                        content.append(delta["content"])
                     for td in delta.get("tool_calls") or []:
                         i=td.get("index",0); e=tc_map.setdefault(i,{"id":"","type":"function","function":{"name":"","arguments":""}})
                         if td.get("id"):e["id"]=td["id"]
@@ -58,4 +62,8 @@ async def call_llm(messages:list,max_tokens:int=4096,tools:list|None=None,extra_
             record_result(cfg.get("config_id"),False,channel)
         raise
     if not got_done:log.warning("LLM stream ended without [DONE] channel=%s",channel)
-    return "".join(content).strip(),[tc_map[i] for i in sorted(tc_map)]
+    full_text = "".join(content).strip()
+    # 清洗可能泄漏的思考标签及伪 CoT 分析
+    full_text = re.sub(r'<think>.*?</think>', '', full_text, flags=re.S)
+    full_text = re.sub(r'(?:分析[^\n]*[:：]|情绪[^\n]*[:：]|-薄销的人设[^\n]*[:：]).*?(?=\n\n|\Z)', '', full_text, flags=re.S).strip()
+    return full_text,[tc_map[i] for i in sorted(tc_map)]
