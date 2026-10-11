@@ -32,6 +32,9 @@ async def send_qq_msg(target_type,target_id,message):
 async def get_msg(message_id):
     r=await send_action_wait("get_msg",{"message_id":int(message_id)});return r.get("data") if r and r.get("status")=="ok" else None
 
+async def get_image(file_id):
+    r=await send_action_wait("get_image",{"file":str(file_id)});return r.get("data") if r and r.get("status")=="ok" else None
+
 async def websocket_endpoint(ws:WebSocket):
     global _conn,_loop
     auth=(ws.headers.get("authorization") or "").replace("Bearer ","").replace("bearer ","").strip()
