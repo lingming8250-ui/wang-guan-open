@@ -11,7 +11,6 @@ BOT_ID=os.getenv("QQ_BOT_ID","");BOT_NAME=os.getenv("QQ_BOT_NAME","Assistant");O
 GROUP_IDS={x.strip() for x in os.getenv("QQ_GROUP_IDS","").split(",") if x.strip()}
 _private_pending=None;_group_pending={}
 _REPLY_RE=re.compile(r'\[REPLY[:：]\s*(-?\d+)\]',re.I);_AT_RE=re.compile(r'\[AT[:：]\s*(\d+)\]',re.I);_CQ_RE=re.compile(r'\[CQ:[^\]]+\]')
-_IMAGE_RE=re.compile(r'\[CQ:image,[^\]]*?(?:url=([^,\]]+)|file=([^,\]]+))[^\]]*?\]',re.I)
 
 def _clean_cq(s):return _CQ_RE.sub('',s or '').strip()
 def _segments(text):
@@ -47,7 +46,7 @@ async def _private_reply():
     global _private_pending
     try:
         # 防插嘴缓冲：等对方 4-6 秒不发新消息了再开口
-        await asyncio.sleep(random.uniform(4.5,6.5));from qq_bot import send_qq_msg
+        await asyncio.sleep(random.uniform(4.0,5.5));from qq_bot import send_qq_msg
         hist=recent("message",30,with_ids=True);reply=(await _tool_chat([{"role":"system","content":build_context()}]+hist)).strip()
         if not reply:return
         # 按换行切成独立气泡逐条发送
@@ -83,24 +82,47 @@ async def _group_reply(gid,force=False):
     finally:
         if _group_pending.get(gid) is task:_group_pending.pop(gid,None)
 
-async def _parse_images_and_text(raw):
-    # 提取图片URL或标记，并保留文本
-    img_urls=[]
-    for m in _IMAGE_RE.finditer(raw):
-        u=m.group(1) or m.group(2)
-        if u and u.startswith("http"):img_urls.append(u)
-    clean_text=_clean_cq(raw)
-    desc=""
+async def _parse_images_and_text(data):
+    # 处理 Array 和 CQ 码两种消息格式中的图片
+    raw = data.get("raw_message", "") or ""
+    message = data.get("message")
+    img_urls = []
+    
+    if isinstance(message, list):
+        for seg in message:
+            if isinstance(seg, dict) and seg.get("type") == "image":
+                d = seg.get("data") or {}
+                u = d.get("url") or d.get("file")
+                if u and str(u).startswith("http"):
+                    img_urls.append(str(u))
+                elif d.get("file"):
+                    # 如果不是http链接，尝试通过 OneBot get_image API 获取真实下载地址
+                    try:
+                        from qq_bot import get_image
+                        img_info = await get_image(d.get("file"))
+                        if img_info and img_info.get("url"):
+                            img_urls.append(img_info["url"])
+                    except Exception:pass
+    else:
+        # 正则兜底解析 CQ 码
+        for m in re.finditer(r'\[CQ:image,[^\]]*?(?:url=([^,\]]+)|file=([^,\]]+))[^\]]*?\]', raw, re.I):
+            u = m.group(1) or m.group(2)
+            if u and u.startswith("http"):
+                img_urls.append(u)
+
+    clean_text = _clean_cq(raw)
+    desc = ""
     if img_urls:
         try:
             from media_utils import recognize_image_url
-            desc=await recognize_image_url(img_urls[0],caption=clean_text)
-        except Exception:
-            desc="[发来了一张表情包/图片]"
+            desc = await recognize_image_url(img_urls[0], caption=clean_text)
+        except Exception as e:
+            desc = f"[图片/表情包]"
+            
     if desc and clean_text:
-        return f"{clean_text} [图片说明: {desc}]"
+        return f"{clean_text} [发来的图片/表情包内容: {desc}]"
     elif desc:
-        return f"[图片说明: {desc}]"
+        return f"[发来的图片/表情包内容: {desc}]"
     return clean_text
 
 async def handle_event(data):
@@ -109,7 +131,7 @@ async def handle_event(data):
     typ=data.get("message_type","");uid=str(data.get("user_id",""));raw=data.get("raw_message","") or "";mid=data.get("message_id")
     if typ=="private":
         if not OWNER_ID or uid!=OWNER_ID:return
-        text=await _parse_images_and_text(raw)
+        text=await _parse_images_and_text(data)
         if not text:return
         save_message("user",f"[QQ] {text}",scene="message",source="qq",message_id=mid)
         # 只要用户还在发新消息，就打断之前的待发送任务，重新计时
