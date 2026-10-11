@@ -26,27 +26,27 @@ def _segments(text):
     return seg if (reply or _AT_RE.search(text)) else text.strip()
 
 def _split_into_bubbles(text: str) -> list[str]:
-    # 严格拆成真人一条一条的短气泡，每条绝不堆大长句
-    raw_lines = [c.strip() for c in re.split(r'[\r\n]+', text) if c.strip()]
+    # 严格按照自然口语，每次只发 1~2 个独立气泡
+    raw = [c.strip() for c in re.split(r'[\r\n]+', text) if c.strip()]
+    if not raw:
+        return [text.strip()]
     bubbles = []
-    for line in raw_lines:
-        if len(line) <= 15:
+    for line in raw:
+        if len(line) <= 20:
             bubbles.append(line)
-            continue
-        # 顺着标点、空格切割
-        parts = [p.strip() for p in re.split(r'(?<=[，,。？！?!~… ])', line) if p.strip()]
-        cur = ""
-        for p in parts:
-            if not cur:
-                cur = p
-            elif len(cur) + len(p) <= 16:
-                cur += p
-            else:
+        else:
+            parts = [p.strip() for p in re.split(r'(?<=[，,。？！?!~…])', line) if p.strip()]
+            cur = ""
+            for p in parts:
+                if not cur:
+                    cur = p
+                elif len(cur) + len(p) <= 22:
+                    cur += p
+                else:
+                    bubbles.append(cur.strip())
+                    cur = p
+            if cur.strip():
                 bubbles.append(cur.strip())
-                cur = p
-        if cur.strip():
-            bubbles.append(cur.strip())
-    # 过滤掉纯标点的残渣
     clean = [b for b in bubbles if re.search(r'[\w\u4e00-\u9fa5]', b)]
     return clean or [text.strip()]
 
@@ -70,11 +70,9 @@ async def _tool_chat(messages,max_rounds=3):
 async def _private_reply():
     global _private_pending
     try:
-        # 防插嘴缓冲：等对方 3-5 秒不发新消息了再开口
-        await asyncio.sleep(random.uniform(3.0,4.5));from qq_bot import send_qq_msg
+        await asyncio.sleep(random.uniform(2.5,4.0));from qq_bot import send_qq_msg
         hist=recent("message",30,with_ids=True);reply=(await _tool_chat([{"role":"system","content":build_context()}]+hist)).strip()
         if not reply:return
-        # 智能切成多个自然独立极短气泡
         chunks=_split_into_bubbles(reply)
         for i,chunk in enumerate(chunks):
             clean=_REPLY_RE.sub('',_AT_RE.sub('',chunk)).strip()
@@ -82,7 +80,7 @@ async def _private_reply():
                 save_message("assistant",clean,scene="message",source="qq")
                 await send_qq_msg("private",int(OWNER_ID),_segments(chunk))
                 if i<len(chunks)-1:
-                    await asyncio.sleep(random.uniform(1.0,2.0))
+                    await asyncio.sleep(random.uniform(1.0,1.8))
     except asyncio.CancelledError:pass
     finally:
         if _private_pending is asyncio.current_task():_private_pending=None
