@@ -26,16 +26,25 @@ def _segments(text):
     return seg if (reply or _AT_RE.search(text)) else text.strip()
 
 def _split_into_bubbles(text: str) -> list[str]:
-    # 优先按换行拆，如果没换行但句子很长，按标点或多空格切开
-    lines = [c.strip() for c in re.split(r'\n+', text) if c.strip()]
+    # 强制将大长句切成自然多气泡
+    # 优先切换行
+    raw_lines = [c.strip() for c in re.split(r'\n+', text) if c.strip()]
     bubbles = []
-    for line in lines:
-        if len(line) > 35 and (' ' in line or '？' in line or '！' in line or '。' in line):
-            sub = [s.strip() for s in re.split(r'[？！。]| {2,}', line) if s.strip()]
-            bubbles.extend(sub if sub else [line])
+    for line in raw_lines:
+        # 如果单行超过 18 个字，强制顺着标点、问号、叹号或连续空格切开
+        if len(line) > 18:
+            parts = [s.strip() for s in re.split(r'([？！。…~]| {1,})', line) if s.strip()]
+            cur = ""
+            for p in parts:
+                cur += p
+                if len(cur) >= 12 or p in "？！。…~":
+                    bubbles.append(cur.strip())
+                    cur = ""
+            if cur.strip():
+                bubbles.append(cur.strip())
         else:
             bubbles.append(line)
-    return bubbles or [text.strip()]
+    return [b for b in bubbles if b] or [text.strip()]
 
 async def _tool_chat(messages,max_rounds=3):
     for _ in range(max_rounds):
