@@ -467,7 +467,7 @@
           <span class="fc-tag" id="cardTag">写作必备</span>
           <span class="fc-counter" id="cardCounter">#1</span>
           
-          <div class="fc-word" id="cardWord">opportunity</div>
+          <div class="fc-word" id="cardWord">加载中...</div>
           <div class="fc-phonetic" onclick="speakCurrentWord()">
             <span id="cardPhonetic">/ˌɒpəˈtjuːnəti/</span>
             <svg viewBox="0 0 24 24"><path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z"/></svg>
@@ -478,7 +478,7 @@
           </div>
           
           <div class="fc-tip" id="cardTip">
-            💡 考场视觉定位：看到双op长词，作文写'给机会'闭眼套用
+            💡 考场视觉定位准备中...
           </div>
         </div>
 
@@ -639,8 +639,8 @@ Taking all these factors into consideration, we should take a rational attitude 
   </nav>
 
   <script>
-    // 四级核心命脉词库（真题出现率最高的一梯队高频词，已内置，无需凌冥找词库）
-    const VOCAB_DATA = [
+    // 默认内置高频打底词库
+    let VOCAB_DATA = [
       { en: "opportunity", ph: "/ˌɒpəˈtjuːnəti/", cn: "n. 机会，良机", tip: "作文必杀：双op开头长词，凡是'提供机会'就写 provide opportunities", tag: "写作必备" },
       { en: "convenient", ph: "/kənˈviːniənt/", cn: "adj. 便利的，方便的", tip: "听力高频：读音像'肯威捏特'，指生活/购物方便", tag: "听力高频" },
       { en: "traditional", ph: "/trəˈdɪʃənl/", cn: "adj. 传统的", tip: "翻译必背：tra开头就认准'传统'，剪纸、中秋、汉服全用它", tag: "翻译必备" },
@@ -670,28 +670,37 @@ Taking all these factors into consideration, we should take a rational attitude 
       { en: "horizon", ph: "/həˈraɪzn/", cn: "n. 眼界，地平线", tip: "作文加分名句：broaden our horizons（开阔眼界）", tag: "写作必备" },
       { en: "rational", ph: "/ˈræʃnəl/", cn: "adj. 理性的，合理的", tip: "作文总结句：take a rational attitude（理性对待）", tag: "写作必备" },
       { en: "meaningful", ph: "/ˈmiːnɪŋfl/", cn: "adj. 有意义的", tip: "作文结尾收束：make our life more meaningful", tag: "写作必备" },
-      { en: "comfortable", ph: "/ˈkʌmftəbl/", cn: "adj. 舒服的，舒适的", tip: "convenient and comfortable（方便又舒适）", tag: "写作必备" },
-      { en: "consume", ph: "/kənˈsjuːm/", cn: "v. 消耗，消费", tip: "阅读经济篇：consumer指消费者，consume指消耗", tag: "阅读定位" },
-      { en: "protect", ph: "/prəˈtekt/", cn: "v. 保护，防护", tip: "简单但重要：protect cultural heritage（保护文化遗产）", tag: "翻译必备" },
-      { en: "express", ph: "/ɪkˈspres/", cn: "v. 表达 n. 特快列车", tip: "听力/写作：express feelings/opinions（表达观点）", tag: "听力高频" },
-      { en: "prepare", ph: "/prɪˈpeə/", cn: "v. 准备，预备", tip: "prepare for CET-4（准备四级考试）", tag: "写作必备" },
-      { en: "discover", ph: "/dɪˈskʌvə/", cn: "v. 发现，发掘", tip: "阅读科技探索篇核心定位词", tag: "阅读定位" },
-      { en: "popular", ph: "/ˈpɒpjələ/", cn: "adj. 流行的，受欢迎的", tip: "is getting more and more popular（越来越受欢迎）", tag: "翻译必备" },
-      { en: "decision", ph: "/dɪˈsɪʒn/", cn: "n. 决定，决议", tip: "make a wise decision（做出明智决定）", tag: "写作必备" },
-      { en: "encourage", ph: "/ɪnˈkʌrɪdʒ/", cn: "v. 鼓励，促进", tip: "encourage students to read more（鼓励多读书）", tag: "写作必备" },
-      { en: "relationship", ph: "/rɪˈleɪʃnʃɪp/", cn: "n. 关系，联系", tip: "人际交往篇高频：interpersonal relationship", tag: "阅读定位" },
-      { en: "balance", ph: "/ˈbæləns/", cn: "n./v. 平衡", tip: "keep a balance between study and play（劳逸结合）", tag: "写作必备" }
+      { en: "comfortable", ph: "/ˈkʌmftəbl/", cn: "adj. 舒服的，舒适的", tip: "convenient and comfortable（方便又舒适）", tag: "写作必备" }
     ];
 
     // 艾宾浩斯复习间隔周期（天数）：第1天、第2天、第4天、第7天、第15天
     const EBBINGHAUS_INTERVALS = [1, 2, 4, 7, 15];
 
-    let currentMode = 'new'; // 'new' 或 'review'
+    let currentMode = 'new';
     let currentPace = parseInt(localStorage.getItem('lingming_pace') || '20');
     let currentIndex = 0;
-
-    // 单词状态结构: { [word]: { stage: 1, nextReview: timestamp, mastered: false, mistakeCount: 0 } }
     let memoryData = JSON.parse(localStorage.getItem('lingming_memory_db') || '{}');
+
+    // 异步加载后台大词库
+    async function loadFullDatabase() {
+      try {
+        const resp = await fetch('/cet4.json');
+        if (resp.ok) {
+          const remoteList = await resp.json();
+          if (Array.isArray(remoteList) && remoteList.length > 0) {
+            const map = new Map();
+            VOCAB_DATA.forEach(w => map.set(w.en, w));
+            remoteList.forEach(w => map.set(w.en, w));
+            VOCAB_DATA = Array.from(map.values());
+            console.log("Full CET4 database loaded:", VOCAB_DATA.length);
+            renderCurrentCard();
+            updateProgress();
+          }
+        }
+      } catch (e) {
+        console.warn("Using offline built-in vocab:", e);
+      }
+    }
 
     function getNewWords() {
       return VOCAB_DATA.filter(w => !memoryData[w.en]);
@@ -701,7 +710,6 @@ Taking all these factors into consideration, we should take a rational attitude 
       const now = Date.now();
       return VOCAB_DATA.filter(w => {
         const item = memoryData[w.en];
-        // 还没彻底掌握且到了复习时间的
         return item && (!item.mastered || item.nextReview <= now);
       });
     }
@@ -757,7 +765,7 @@ Taking all these factors into consideration, we should take a rational attitude 
       
       const mEl = document.getElementById('cardMeaning');
       mEl.innerText = item.cn;
-      mEl.classList.add('blur'); // 默认遮挡
+      mEl.classList.add('blur');
       
       document.getElementById('cardTip').innerText = item.tip;
       updateProgress();
@@ -786,23 +794,20 @@ Taking all these factors into consideration, we should take a rational attitude 
       const word = list[currentIndex].en;
 
       if (!known) {
-        // 没印象：立即揭晓中文，不推进艾宾浩斯阶段，打回第1阶段明天再背
         const mEl = document.getElementById('cardMeaning');
         if (mEl.classList.contains('blur')) {
           mEl.classList.remove('blur');
           showToast('已揭晓释义！瞅两眼再走');
           return;
         }
-        // 已经揭晓释义了，再次点没印象切下一张
         memoryData[word] = {
           stage: 1,
-          nextReview: Date.now() + 12 * 3600 * 1000, // 12小时后复习
+          nextReview: Date.now() + 12 * 3600 * 1000,
           mastered: false,
           mistakeCount: (memoryData[word]?.mistakeCount || 0) + 1
         };
         showToast('打回复习池，明天艾宾浩斯见！');
       } else {
-        // 拿下了：按艾宾浩斯遗忘曲线推移下一次复习时间
         const prevStage = memoryData[word]?.stage || 0;
         const nextStage = prevStage + 1;
         const intervalDays = EBBINGHAUS_INTERVALS[Math.min(nextStage - 1, EBBINGHAUS_INTERVALS.length - 1)];
@@ -819,7 +824,6 @@ Taking all these factors into consideration, we should take a rational attitude 
 
       localStorage.setItem('lingming_memory_db', JSON.stringify(memoryData));
       
-      // 切换到下一张
       if (currentMode === 'new' && getNewWords().length === 0) {
         setMode('review');
       } else {
@@ -897,6 +901,7 @@ Taking all these factors into consideration, we should take a rational attitude 
       renderCurrentCard();
       renderChecklist();
       document.getElementById('memoInput').value = localStorage.getItem('lingming_memo') || '';
+      loadFullDatabase();
     });
   </script>
 </body>
