@@ -4,12 +4,14 @@ import hmac
 import logging
 import httpx
 import uvicorn
+import asyncio as _asyncio
 
 from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import FileResponse, JSONResponse, StreamingResponse
 from starlette.routing import Route, WebSocketRoute
 from starlette.middleware.cors import CORSMiddleware
+from contextlib import asynccontextmanager
 
 from context import build_context
 from free_tools import TOOL_SCHEMAS, TOOL_DISPATCH
@@ -23,6 +25,7 @@ from runtime_config import (
     get_active_api_key,
     rotate_active_api_key,
 )
+from vocab_service import auto_ensure_full_vocab
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s", force=True)
 log = logging.getLogger(__name__)
@@ -141,8 +144,7 @@ async def telegram_webhook(request: Request):
         return JSONResponse({"error": "invalid json"}, status_code=400)
     from telegram_bot import handle_update
     from bg_executor import track_task
-    import asyncio
-    track_task(asyncio.create_task(handle_update(update)))
+    track_task(_asyncio.create_task(handle_update(update)))
     return JSONResponse({"ok": True})
 
 
@@ -464,12 +466,11 @@ async def chat_completions(request: Request):
     return StreamingResponse(event_stream(), media_type="text/event-stream", headers={"Cache-Control": "no-cache"})
 
 
-from contextlib import asynccontextmanager
-import asyncio as _asyncio
-
 @asynccontextmanager
 async def _lifespan(app):
     tasks = []
+    # 启动时在后台自动检测并下载/补全 4000+ 四级全量真题大词库
+    tasks.append(_asyncio.create_task(auto_ensure_full_vocab()))
     if os.environ.get("WX_ILINK_TOKEN") or os.environ.get("SUPABASE_URL"):
         try:
             from wx_bot import async_wx_bot
