@@ -25,11 +25,17 @@ def unregister_context_provider(provider:ContextProvider):
 
 
 def _base_prompt():
+    env_prompt = os.getenv("SYSTEM_PROMPT", "").strip()
+    if env_prompt:
+        return env_prompt
     try:
         from runtime_config import get_system_prompt
-        p=get_system_prompt()
-    except Exception:p=""
-    return (p or os.getenv("SYSTEM_PROMPT",f"You are {AI_NAME}, an assistant for {USER_NAME}.")).strip()
+        p = get_system_prompt()
+        if p and p != "You are a helpful AI assistant.":
+            return p
+    except Exception:
+        pass
+    return f"You are {AI_NAME}, an assistant for {USER_NAME}."
 
 
 def _persona():
