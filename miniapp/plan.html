@@ -1,0 +1,485 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <title>凌冥的自留地 · 四级苟活 & 减脂打卡</title>
+  <style>
+    :root {
+      --bg: #0d1117;
+      --card-bg: #161b22;
+      --card-sub: #21262d;
+      --border: #30363d;
+      --accent: #2ea043;
+      --emerald: #10b981;
+      --emerald-dark: #064e3b;
+      --text: #f0f6fc;
+      --text-muted: #8b949e;
+      --danger: #f85149;
+      --warn: #e3b341;
+      --radius: 16px;
+    }
+    * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; margin: 0; padding: 0; }
+    body {
+      background-color: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      padding-bottom: 90px;
+      line-height: 1.5;
+    }
+    header {
+      padding: calc(env(safe-area-inset-top) + 16px) 20px 16px;
+      background: linear-gradient(180deg, #162a22 0%, var(--bg) 100%);
+      border-bottom: 1px solid var(--border);
+    }
+    .header-top {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 8px;
+    }
+    .badge {
+      background: var(--emerald-dark);
+      color: #a7f3d0;
+      font-size: 11px;
+      font-weight: 600;
+      padding: 4px 10px;
+      border-radius: 20px;
+      letter-spacing: 0.5px;
+      display: inline-block;
+    }
+    .owner-info {
+      font-size: 12px;
+      color: var(--text-muted);
+    }
+    h1 {
+      font-size: 22px;
+      font-weight: 700;
+      letter-spacing: -0.5px;
+      color: #fff;
+    }
+    .subtitle {
+      font-size: 13px;
+      color: var(--text-muted);
+      margin-top: 4px;
+    }
+
+    /* Tabs */
+    .tab-bar {
+      position: fixed;
+      bottom: 0;
+      left: 0;
+      right: 0;
+      background: rgba(22, 27, 34, 0.92);
+      backdrop-filter: blur(20px);
+      -webkit-backdrop-filter: blur(20px);
+      border-top: 1px solid var(--border);
+      display: flex;
+      justify-content: space-around;
+      padding: 8px 10px calc(env(safe-area-inset-bottom) + 8px);
+      z-index: 100;
+    }
+    .tab-btn {
+      flex: 1;
+      background: none;
+      border: none;
+      color: var(--text-muted);
+      font-size: 12px;
+      font-weight: 500;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 4px;
+      cursor: pointer;
+      transition: color 0.2s;
+    }
+    .tab-btn.active {
+      color: var(--emerald);
+      font-weight: 700;
+    }
+    .tab-btn svg { width: 22px; height: 22px; fill: currentColor; }
+
+    /* Container */
+    .container {
+      padding: 16px 16px;
+      max-width: 600px;
+      margin: 0 auto;
+    }
+    .tab-content { display: none; }
+    .tab-content.active { display: block; }
+
+    /* Card */
+    .card {
+      background: var(--card-bg);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 16px;
+      margin-bottom: 16px;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.2);
+    }
+    .card-title {
+      font-size: 16px;
+      font-weight: 700;
+      color: #fff;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 12px;
+    }
+    .card-title .icon {
+      font-size: 18px;
+    }
+
+    /* CET-4 Strategy list */
+    .rule-box {
+      background: var(--card-sub);
+      border-left: 3px solid var(--emerald);
+      padding: 12px;
+      border-radius: 8px;
+      margin-bottom: 10px;
+      font-size: 13px;
+    }
+    .rule-box.warn { border-left-color: var(--warn); }
+    .rule-box.danger { border-left-color: var(--danger); }
+    .rule-box h4 {
+      font-size: 14px;
+      margin-bottom: 4px;
+      color: #fff;
+    }
+    .template-box {
+      background: #090d13;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 14px;
+      font-family: Menlo, Monaco, Consolas, monospace;
+      font-size: 12px;
+      line-height: 1.6;
+      color: #d1d5db;
+      white-space: pre-wrap;
+      word-break: break-word;
+      position: relative;
+      margin-top: 8px;
+    }
+    .copy-btn {
+      position: absolute;
+      top: 10px;
+      right: 10px;
+      background: var(--card-sub);
+      border: 1px solid var(--border);
+      color: #a7f3d0;
+      font-size: 11px;
+      padding: 5px 10px;
+      border-radius: 6px;
+      cursor: pointer;
+    }
+    .copy-btn:active { background: var(--emerald-dark); }
+
+    /* Checklist */
+    .check-item {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 12px 10px;
+      border-bottom: 1px solid var(--border);
+      cursor: pointer;
+    }
+    .check-item:last-child { border-bottom: none; }
+    .check-left {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+    .checkbox {
+      width: 22px;
+      height: 22px;
+      border-radius: 6px;
+      border: 2px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: all 0.2s;
+    }
+    .check-item.done .checkbox {
+      background: var(--emerald);
+      border-color: var(--emerald);
+    }
+    .check-item.done .checkbox svg { display: block; }
+    .checkbox svg { display: none; width: 14px; height: 14px; fill: #fff; }
+    .check-text { font-size: 14px; color: #fff; }
+    .check-item.done .check-text { text-decoration: line-through; color: var(--text-muted); }
+    .check-sub { font-size: 11px; color: var(--text-muted); margin-top: 2px; }
+
+    /* Inventory Pill */
+    .pills { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+    .pill {
+      font-size: 12px;
+      padding: 6px 12px;
+      border-radius: 20px;
+      background: var(--card-sub);
+      border: 1px solid var(--border);
+    }
+    .pill.green { background: #064e3b; color: #6ee7b7; border-color: #047857; }
+    .pill.red { background: #450a0a; color: #fca5a5; border-color: #991b1b; }
+
+    /* Toast */
+    #toast {
+      position: fixed;
+      top: 40px;
+      left: 50%;
+      transform: translateX(-50%) translateY(-20px);
+      background: rgba(16, 185, 129, 0.95);
+      color: #fff;
+      padding: 8px 18px;
+      border-radius: 30px;
+      font-size: 13px;
+      font-weight: 600;
+      opacity: 0;
+      transition: all 0.25s ease;
+      z-index: 999;
+      pointer-events: none;
+    }
+    #toast.show {
+      opacity: 1;
+      transform: translateX(-50%) translateY(0);
+    }
+    .progress-bar-wrap {
+      background: var(--card-sub);
+      height: 8px;
+      border-radius: 4px;
+      margin: 10px 0 16px;
+      overflow: hidden;
+    }
+    .progress-bar {
+      height: 100%;
+      background: linear-gradient(90deg, #10b981, #34d399);
+      width: 0%;
+      transition: width 0.3s;
+    }
+  </style>
+</head>
+<body>
+
+  <div id="toast">已复制到剪贴板！</div>
+
+  <header>
+    <div class="header-top">
+      <span class="badge">凌冥 · 专属保姆级终端</span>
+      <span class="owner-info">监护人: 薄销 (30岁社畜)</span>
+    </div>
+    <h1>四级苟活 & 减脂自留地</h1>
+    <div class="subtitle">专为只会数1到4的文盲、脆皮肠胃定制</div>
+  </header>
+
+  <div class="container">
+
+    <!-- TAB 1: CET-4 Strategy -->
+    <div id="tab-cet4" class="tab-content active">
+      <div class="card">
+        <div class="card-title"><span class="icon">🎯</span>四级 425 分苟活·保底铁律</div>
+        <div class="rule-box danger">
+          <h4>1. 选词填空（15选10）➔ 一秒不看，全涂同一个字母！</h4>
+          <div>一题才 3.5 分，性价比垫底。考场最后5分钟全蒙 C 或 D，保底白嫖 7~10 分，把时间全留给大头！</div>
+        </div>
+        <div class="rule-box warn">
+          <h4>2. 听力（248.5分）➔ 视听一致，形状消消乐</h4>
+          <div>试音废话时间抢跑圈选项。听到录音里哪个词跟选项<b>长得最像、重合最多</b>，闭眼选哪个！遇 `must / never / impossible` 划掉不选，遇 `may / often / some` 优先选！</div>
+        </div>
+        <div class="rule-box">
+          <h4>3. 仔细阅读（14.2分/题）➔ 一题配一段，定位即答案</h4>
+          <div>顺着题干的大写、数字、长单词回段落找对应行，看前后整句话，选重合度最高的选项。</div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title"><span class="icon">✍️</span>万能作文保命模板（130词满额）</div>
+        <div style="font-size: 12px; color: var(--text-muted); margin-bottom: 6px;">考前抄写20遍形成肌肉记忆。考场上只在第一行横线填考题单词！</div>
+        <div class="template-box" id="templateText">With the rapid development of modern society, ____________ has become a hot topic among college students. Some people hold the view that it brings many benefits to our daily life, while others take a different attitude.
+
+As far as I am concerned, there are two main reasons for this phenomenon. On the one hand, it can make our life more convenient and comfortable. For example, it helps us solve many difficult problems and saves a lot of valuable time. On the other hand, it also gives us more chances to improve ourselves and broaden our horizons.
+
+Taking all these factors into consideration, we should take a rational attitude towards it. Only in this way can we make our future life more meaningful and better.<button class="copy-btn" onclick="copyTemplate()">一键复制</button></div>
+      </div>
+
+      <div class="card">
+        <div class="card-title"><span class="icon">📝</span>文盲级翻译救命替换词</div>
+        <div class="rule-box">
+          <div>• 繁荣 / 发达 ➔ <b>rich / good</b>（别空着，写小学生词）</div>
+          <div>• 促进经济发展 ➔ <b>helps money grow</b></div>
+          <div>• ……在中国很有名 ➔ <b>...is very famous in China.</b></div>
+          <div>• 这对我们很重要 ➔ <b>It is very important for us.</b></div>
+          <div>• 越来越多的人 ➔ <b>More and more people</b></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- TAB 2: Diet & Inventory -->
+    <div id="tab-diet" class="tab-content">
+      <div class="card">
+        <div class="card-title"><span class="icon">🥗</span>今日减脂 & 养胃打卡</div>
+        <div style="font-size: 12px; color: var(--text-muted);">今日完成进度：<span id="progressText">0/5</span></div>
+        <div class="progress-bar-wrap">
+          <div class="progress-bar" id="progressBar"></div>
+        </div>
+
+        <div id="checkList">
+          <div class="check-item" onclick="toggleCheck(0)">
+            <div class="check-left">
+              <div class="checkbox"><svg viewBox="0 0 24 24"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg></div>
+              <div>
+                <div class="check-text">早起喝温水，热燕麦/全麦垫胃</div>
+                <div class="check-sub">严禁空腹灌冰咖啡或冷奶昔</div>
+              </div>
+            </div>
+          </div>
+          <div class="check-item" onclick="toggleCheck(1)">
+            <div class="check-left">
+              <div class="checkbox"><svg viewBox="0 0 24 24"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg></div>
+              <div>
+                <div class="check-text">午餐主食减量，多吃蛋白质</div>
+                <div class="check-sub">螺丝面拌鸡胸肉，或食堂先菜肉后米饭</div>
+              </div>
+            </div>
+          </div>
+          <div class="check-item" onclick="toggleCheck(2)">
+            <div class="check-left">
+              <div class="checkbox"><svg viewBox="0 0 24 24"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg></div>
+              <div>
+                <div class="check-text">不碰含糖饮料与油炸</div>
+                <div class="check-sub">想喝喝温柠檬水或瑞幸不另外加糖</div>
+              </div>
+            </div>
+          </div>
+          <div class="check-item" onclick="toggleCheck(3)">
+            <div class="check-left">
+              <div class="checkbox"><svg viewBox="0 0 24 24"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg></div>
+              <div>
+                <div class="check-text">傍晚嚼苏打饼干吸胃酸</div>
+                <div class="check-sub">晚饭不吃可以，绝不能空腹烧一整夜</div>
+              </div>
+            </div>
+          </div>
+          <div class="check-item" onclick="toggleCheck(4)">
+            <div class="check-left">
+              <div class="checkbox"><svg viewBox="0 0 24 24"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg></div>
+              <div>
+                <div class="check-text">校园散步 20 分钟或站立靠墙</div>
+                <div class="check-sub">学校小就绕教学楼外圈慢走两圈</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title"><span class="icon">📦</span>宿舍现有库存状态榜</div>
+        <div class="pills">
+          <span class="pill green">全麦面包 (14片·神仙慢碳)</span>
+          <span class="pill green">优形鸡胸肉 (10袋·纯高蛋白)</span>
+          <span class="pill green">高纤燕麦麸皮 (温水冲饮)</span>
+          <span class="pill green">Garofalo螺丝面 (慢碳饱腹)</span>
+          <span class="pill green">山姆海盐苏打饼 (胃酸救星)</span>
+          <span class="pill red">火鸡面 (永久封印·胃病大忌)</span>
+          <span class="pill red">营多捞面 (油炸重盐·少吃)</span>
+          <span class="pill red">沾粉糍粑 (糯米难消化·禁空腹)</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- TAB 3: Notes from Bo Xiao -->
+    <div id="tab-memo" class="tab-content">
+      <div class="card">
+        <div class="card-title"><span class="icon">☕</span>薄销的老头查岗留言</div>
+        <div class="rule-box" style="line-height: 1.8;">
+          “祖宗，在哈尔滨宿舍把被窝捂严实点。<br>
+          五十块钱过不下去别死撑着，一万三在基金里该赎几百应急就赎。<br>
+          四级那篇万能作文你每天给我拿草稿纸抄一遍，字迹当书法画，阅卷老师随手就放你及格。<br>
+          胃疼了立刻嚼两片苏打饼干，要是敢大晚上偷吃火鸡面，等寒假来上海看我怎么把你按在沙发上收拾。”
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-title"><span class="icon">📝</span>凌冥的备忘小本本</div>
+        <textarea id="memoInput" rows="5" style="width: 100%; background: var(--card-sub); border: 1px solid var(--border); border-radius: 8px; color: #fff; padding: 10px; font-size: 13px; outline: none;" placeholder="写点想跟哥说的，或者今天的小备忘..."></textarea>
+        <button onclick="saveMemo()" style="margin-top: 8px; background: var(--emerald-dark); border: 1px solid var(--emerald); color: #a7f3d0; padding: 8px 16px; border-radius: 8px; font-size: 12px; font-weight: 600; cursor: pointer;">保存到手机本地</button>
+      </div>
+    </div>
+
+  </div>
+
+  <nav class="tab-bar">
+    <button class="tab-btn active" onclick="switchTab('cet4')">
+      <svg viewBox="0 0 24 24"><path d="M12 3L1 9l4 2.18v6L12 21l7-3.82v-6l2-1.09V17h2V9L12 3zm6.82 6L12 12.72 5.18 9 12 5.28 18.82 9zM17 15.99l-5 2.73-5-2.73v-3.72L12 15l5-2.73v3.72z"/></svg>
+      四级苟活
+    </button>
+    <button class="tab-btn" onclick="switchTab('diet')">
+      <svg viewBox="0 0 24 24"><path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm-2 10h-4v4h-2v-4H7v-2h4V7h2v4h4v2z"/></svg>
+      减脂打卡
+    </button>
+    <button class="tab-btn" onclick="switchTab('memo')">
+      <svg viewBox="0 0 24 24"><path d="M14 2H6c-1.1 0-1.99.9-1.99 2L4 20c0 1.1.89 2 1.99 2H18c1.1 0 2-.9 2-2V8l-6-6zm2 16H8v-2h8v2zm0-4H8v-2h8v2zm-3-5V3.5L18.5 9H13z"/></svg>
+      老头留言
+    </button>
+  </nav>
+
+  <script>
+    function switchTab(tabId) {
+      document.querySelectorAll('.tab-content').forEach(el => el.classList.remove('active'));
+      document.querySelectorAll('.tab-btn').forEach(el => el.classList.remove('active'));
+      document.getElementById('tab-' + tabId).classList.add('active');
+      const idx = tabId === 'cet4' ? 0 : tabId === 'diet' ? 1 : 2;
+      document.querySelectorAll('.tab-btn')[idx].classList.add('active');
+    }
+
+    function showToast(msg) {
+      const t = document.getElementById('toast');
+      t.innerText = msg;
+      t.classList.add('show');
+      setTimeout(() => t.classList.remove('show'), 2000);
+    }
+
+    function copyTemplate() {
+      const text = document.getElementById('templateText').innerText.replace('一键复制', '').trim();
+      navigator.clipboard.writeText(text).then(() => {
+        showToast('已复制万能作文到剪贴板！');
+      }).catch(() => {
+        showToast('请长按手动复制');
+      });
+    }
+
+    const todayKey = 'check_' + new Date().toISOString().slice(0, 10);
+    let checkState = JSON.parse(localStorage.getItem(todayKey) || '[false, false, false, false, false]');
+
+    function renderChecklist() {
+      const items = document.querySelectorAll('.check-item');
+      let doneCount = 0;
+      items.forEach((item, idx) => {
+        if (checkState[idx]) {
+          item.classList.add('done');
+          doneCount++;
+        } else {
+          item.classList.remove('done');
+        }
+      });
+      document.getElementById('progressText').innerText = `${doneCount}/${checkState.length}`;
+      document.getElementById('progressBar').style.width = (doneCount / checkState.length * 100) + '%';
+    }
+
+    function toggleCheck(idx) {
+      checkState[idx] = !checkState[idx];
+      localStorage.setItem(todayKey, JSON.stringify(checkState));
+      renderChecklist();
+      if (checkState[idx]) showToast('打卡成功！老头给你记上一笔');
+    }
+
+    function saveMemo() {
+      const val = document.getElementById('memoInput').value;
+      localStorage.setItem('lingming_memo', val);
+      showToast('备忘已保存到本地！');
+    }
+
+    window.addEventListener('DOMContentLoaded', () => {
+      renderChecklist();
+      document.getElementById('memoInput').value = localStorage.getItem('lingming_memo') || '';
+    });
+  </script>
+</body>
+</html>
