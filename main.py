@@ -94,9 +94,6 @@ def _inject_system(messages: list) -> list:
 
 
 def _headers(api_key: str, extra_headers: dict | None = None) -> dict:
-    # Explicit custom headers may be useful for some compatible providers, but the
-    # gateway's Authorization and Content-Type always win so an imported config
-    # cannot silently redirect credentials into a different header value.
     custom = {str(k): str(v) for k, v in (extra_headers or {}).items()}
     custom.pop("Authorization", None)
     custom.pop("authorization", None)
@@ -124,6 +121,10 @@ async def health(_: Request):
 
 async def miniapp(_: Request):
     return FileResponse("miniapp/miniapp.html", media_type="text/html")
+
+
+async def plan_page(_: Request):
+    return FileResponse("miniapp/plan.html", media_type="text/html")
 
 
 async def telegram_webhook(request: Request):
@@ -162,7 +163,6 @@ async def admin_context_preview(request: Request):
 
 
 async def _post_json_with_key_rotation(payload: dict):
-    """POST once, and retry across configured keys on auth/rate/server failures."""
     base, api_key, model, extra_headers, runtime_provider = _upstream_config()
     payload["model"] = model
     target = f"{base}/chat/completions"
@@ -195,7 +195,6 @@ async def _post_json_with_key_rotation(payload: dict):
 
 
 async def _run_internal_tools(payload: dict) -> dict:
-    """Run only the public repository's own tools. Client-supplied tools are untouched."""
     working = dict(payload)
     messages = list(working.get("messages") or [])
     working["stream"] = False
@@ -306,9 +305,6 @@ async def chat_completions(request: Request):
     payload["messages"] = _inject_system(original_messages)
     want_stream = bool(payload.get("stream", False))
 
-    # Only execute tools that this public gateway itself injected. If a client
-    # supplied its own tools, the gateway remains a transparent proxy and leaves
-    # execution to that client.
     internal_tools = bool(
         INJECT_PUBLIC_TOOLS
         and TOOL_SCHEMAS
@@ -337,7 +333,6 @@ async def chat_completions(request: Request):
             yield b"data: [DONE]\n\n"
         return StreamingResponse(one_shot_stream(), media_type="text/event-stream", headers={"Cache-Control": "no-cache"})
 
-    # Transparent path for normal client-managed requests.
     try:
         base, api_key, model, extra_headers, runtime_provider = _upstream_config()
     except RuntimeError as exc:
@@ -364,8 +359,6 @@ async def chat_completions(request: Request):
             return JSONResponse({"error": {"message": "Upstream returned a non-JSON response"}}, status_code=502)
 
     async def event_stream():
-        # Streaming retries keys only before any body bytes are sent. Once streaming
-        # starts, switching providers/keys mid-response would corrupt the SSE stream.
         provider = get_active_provider() if runtime_provider else None
         tries = len(provider.get("api_keys") or []) if provider else 1
         tries = max(1, tries)
@@ -427,8 +420,6 @@ async def chat_completions(request: Request):
                                     "choices": [{"index": 0, "delta": {"content": prefix + reasoning}, "finish_reason": None}],
                                 }
                                 yield f"data: {json.dumps(rebuilt, ensure_ascii=False)}\n\n".encode("utf-8")
-                                # Some compatible providers may put reasoning_content and final
-                                # content in the same delta. Do not drop that content.
                                 if not content and not finish_reason:
                                     continue
                             if in_thinking and (content or finish_reason):
@@ -490,6 +481,7 @@ async def _lifespan(app):
 app = Starlette(routes=[
     Route("/health", health, methods=["GET"]),
     Route("/miniapp", miniapp, methods=["GET"]),
+    Route("/plan", plan_page, methods=["GET"]),
     Route("/webhook", telegram_webhook, methods=["POST"]),
     WebSocketRoute("/qq-ws", __import__("qq_bot").websocket_endpoint),
     Route("/admin/config", admin_config, methods=["GET", "PUT"]),
