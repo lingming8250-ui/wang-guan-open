@@ -11,6 +11,7 @@ BOT_ID=os.getenv("QQ_BOT_ID","");BOT_NAME=os.getenv("QQ_BOT_NAME","Assistant");O
 GROUP_IDS={x.strip() for x in os.getenv("QQ_GROUP_IDS","").split(",") if x.strip()}
 _private_pending=None;_group_pending={}
 _REPLY_RE=re.compile(r'\[REPLY[:：]\s*(-?\d+)\]',re.I);_AT_RE=re.compile(r'\[AT[:：]\s*(\d+)\]',re.I);_CQ_RE=re.compile(r'\[CQ:[^\]]+\]')
+_IMAGE_RE=re.compile(r'\[CQ:image,[^\]]*?(?:url=([^,\]]+)|file=([^,\]]+))[^\]]*?\]',re.I)
 
 def _clean_cq(s):return _CQ_RE.sub('',s or '').strip()
 def _segments(text):
@@ -45,7 +46,8 @@ async def _tool_chat(messages,max_rounds=3):
 async def _private_reply():
     global _private_pending
     try:
-        await asyncio.sleep(random.randint(1,3));from qq_bot import send_qq_msg
+        # 防插嘴缓冲：等对方 4-6 秒不发新消息了再开口
+        await asyncio.sleep(random.uniform(4.5,6.5));from qq_bot import send_qq_msg
         hist=recent("message",30,with_ids=True);reply=(await _tool_chat([{"role":"system","content":build_context()}]+hist)).strip()
         if not reply:return
         # 按换行切成独立气泡逐条发送
@@ -64,7 +66,7 @@ async def _private_reply():
 async def _group_reply(gid,force=False):
     task=asyncio.current_task()
     try:
-        await asyncio.sleep(random.randint(2,5));from qq_bot import send_qq_msg
+        await asyncio.sleep(random.randint(3,6));from qq_bot import send_qq_msg
         scene=f"group_qq_{gid}";hist=recent(scene,50,with_ids=True)
         instruction=GROUP_CHAT_EXAMPLE+("\nYou were directly mentioned and must reply; do not output PASS." if force else "")
         reply=(await _tool_chat([{"role":"system","content":instruction+"\n\n"+build_context()}]+hist)).strip()
@@ -81,15 +83,36 @@ async def _group_reply(gid,force=False):
     finally:
         if _group_pending.get(gid) is task:_group_pending.pop(gid,None)
 
+async def _parse_images_and_text(raw):
+    # 提取图片URL或标记，并保留文本
+    img_urls=[]
+    for m in _IMAGE_RE.finditer(raw):
+        u=m.group(1) or m.group(2)
+        if u and u.startswith("http"):img_urls.append(u)
+    clean_text=_clean_cq(raw)
+    desc=""
+    if img_urls:
+        try:
+            from media_utils import recognize_image_url
+            desc=await recognize_image_url(img_urls[0],caption=clean_text)
+        except Exception:
+            desc="[发来了一张表情包/图片]"
+    if desc and clean_text:
+        return f"{clean_text} [图片说明: {desc}]"
+    elif desc:
+        return f"[图片说明: {desc}]"
+    return clean_text
+
 async def handle_event(data):
     global _private_pending
     if data.get("post_type")!="message":return
     typ=data.get("message_type","");uid=str(data.get("user_id",""));raw=data.get("raw_message","") or "";mid=data.get("message_id")
     if typ=="private":
         if not OWNER_ID or uid!=OWNER_ID:return
-        text=_clean_cq(raw)
+        text=await _parse_images_and_text(raw)
         if not text:return
         save_message("user",f"[QQ] {text}",scene="message",source="qq",message_id=mid)
+        # 只要用户还在发新消息，就打断之前的待发送任务，重新计时
         if _private_pending and not _private_pending.done():_private_pending.cancel()
         _private_pending=asyncio.create_task(_private_reply());return
     if typ!="group":return
