@@ -3,10 +3,10 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-  <title>凌冥的自留地 · 四级苟活 & 词库打卡</title>
+  <title>凌冥的自留地 · 四级斩词 & 减脂打卡</title>
   <style>
     :root {
-      --bg: #0d1117;
+      --bg: #0a0e14;
       --card-bg: #161b22;
       --card-sub: #21262d;
       --border: #30363d;
@@ -17,7 +17,7 @@
       --text-muted: #8b949e;
       --danger: #f85149;
       --warn: #e3b341;
-      --radius: 16px;
+      --radius: 18px;
     }
     * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; margin: 0; padding: 0; }
     body {
@@ -28,24 +28,23 @@
       line-height: 1.5;
     }
     header {
-      padding: calc(env(safe-area-inset-top) + 16px) 20px 16px;
-      background: linear-gradient(180deg, #162a22 0%, var(--bg) 100%);
+      padding: calc(env(safe-area-inset-top) + 16px) 20px 14px;
+      background: linear-gradient(180deg, #13281e 0%, var(--bg) 100%);
       border-bottom: 1px solid var(--border);
     }
     .header-top {
       display: flex;
       justify-content: space-between;
       align-items: center;
-      margin-bottom: 8px;
+      margin-bottom: 6px;
     }
     .badge {
       background: var(--emerald-dark);
       color: #a7f3d0;
       font-size: 11px;
       font-weight: 600;
-      padding: 4px 10px;
+      padding: 3px 10px;
       border-radius: 20px;
-      letter-spacing: 0.5px;
       display: inline-block;
     }
     .owner-info {
@@ -53,15 +52,10 @@
       color: var(--text-muted);
     }
     h1 {
-      font-size: 22px;
+      font-size: 20px;
       font-weight: 700;
       letter-spacing: -0.5px;
       color: #fff;
-    }
-    .subtitle {
-      font-size: 13px;
-      color: var(--text-muted);
-      margin-top: 4px;
     }
 
     /* Tabs */
@@ -70,7 +64,7 @@
       bottom: 0;
       left: 0;
       right: 0;
-      background: rgba(22, 27, 34, 0.95);
+      background: rgba(22, 27, 34, 0.96);
       backdrop-filter: blur(20px);
       -webkit-backdrop-filter: blur(20px);
       border-top: 1px solid var(--border);
@@ -99,7 +93,6 @@
     }
     .tab-btn svg { width: 20px; height: 20px; fill: currentColor; }
 
-    /* Container */
     .container {
       padding: 16px 14px;
       max-width: 600px;
@@ -115,10 +108,10 @@
       border-radius: var(--radius);
       padding: 16px;
       margin-bottom: 16px;
-      box-shadow: 0 4px 12px rgba(0,0,0,0.25);
+      box-shadow: 0 4px 12px rgba(0,0,0,0.3);
     }
     .card-title {
-      font-size: 16px;
+      font-size: 15px;
       font-weight: 700;
       color: #fff;
       display: flex;
@@ -126,7 +119,115 @@
       gap: 8px;
       margin-bottom: 12px;
     }
-    .card-title .icon { font-size: 18px; }
+
+    /* Flashcard (类似不背单词/百词斩) */
+    .flashcard {
+      background: linear-gradient(145deg, #1c232d 0%, #161b22 100%);
+      border: 1px solid var(--border);
+      border-radius: 20px;
+      padding: 28px 20px;
+      text-align: center;
+      margin: 10px 0 16px;
+      min-height: 260px;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      align-items: center;
+      position: relative;
+      box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+    }
+    .fc-word {
+      font-size: 30px;
+      font-weight: 800;
+      color: #34d399;
+      letter-spacing: 0.5px;
+      margin-bottom: 6px;
+    }
+    .fc-phonetic {
+      font-size: 13px;
+      color: var(--text-muted);
+      margin-bottom: 14px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      cursor: pointer;
+    }
+    .fc-phonetic svg { width: 16px; height: 16px; fill: currentColor; }
+    .fc-meaning {
+      font-size: 16px;
+      font-weight: 600;
+      color: #f3f4f6;
+      margin-bottom: 8px;
+      transition: all 0.2s;
+    }
+    .fc-meaning.blur {
+      filter: blur(8px);
+      user-select: none;
+      cursor: pointer;
+    }
+    .fc-tip {
+      font-size: 12px;
+      color: #9ca3af;
+      background: var(--card-sub);
+      padding: 6px 12px;
+      border-radius: 8px;
+      margin-top: 10px;
+      border-left: 2px solid var(--emerald);
+      max-width: 90%;
+    }
+    .fc-tag {
+      position: absolute;
+      top: 14px;
+      left: 14px;
+      font-size: 10px;
+      padding: 3px 8px;
+      border-radius: 12px;
+      background: rgba(16, 185, 129, 0.15);
+      color: #6ee7b7;
+    }
+    .fc-counter {
+      position: absolute;
+      top: 14px;
+      right: 14px;
+      font-size: 11px;
+      color: var(--text-muted);
+    }
+
+    /* Flashcard action buttons */
+    .fc-actions {
+      display: flex;
+      gap: 12px;
+      margin-top: 8px;
+    }
+    .btn-action {
+      flex: 1;
+      padding: 14px 10px;
+      border-radius: 14px;
+      font-size: 14px;
+      font-weight: 700;
+      border: 1px solid var(--border);
+      cursor: pointer;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      gap: 6px;
+      transition: transform 0.1s;
+    }
+    .btn-action:active { transform: scale(0.97); }
+    .btn-forget {
+      background: #2a1b1b;
+      color: #fca5a5;
+      border-color: #7f1d1d;
+    }
+    .btn-know {
+      background: #0d3829;
+      color: #6ee7b7;
+      border-color: #047857;
+    }
+    .btn-hint {
+      background: var(--card-sub);
+      color: #9ca3af;
+    }
 
     /* Rules */
     .rule-box {
@@ -170,79 +271,6 @@
       border-radius: 6px;
       cursor: pointer;
     }
-    .copy-btn:active { background: var(--emerald-dark); }
-
-    /* Vocabulary Cards */
-    .word-grid {
-      display: grid;
-      grid-template-columns: 1fr;
-      gap: 10px;
-      margin-top: 10px;
-    }
-    .word-card {
-      background: var(--card-sub);
-      border: 1px solid var(--border);
-      border-radius: 12px;
-      padding: 12px 14px;
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      transition: all 0.2s;
-    }
-    .word-card.mastered {
-      opacity: 0.55;
-      background: #090d13;
-      border-color: #21262d;
-    }
-    .word-card.mastered .word-en {
-      text-decoration: line-through;
-      color: var(--text-muted);
-    }
-    .word-left {
-      display: flex;
-      flex-direction: column;
-      gap: 3px;
-    }
-    .word-en {
-      font-size: 16px;
-      font-weight: 700;
-      color: #a7f3d0;
-      letter-spacing: 0.3px;
-    }
-    .word-cn {
-      font-size: 13px;
-      color: #e5e7eb;
-    }
-    .word-tip {
-      font-size: 11px;
-      color: var(--text-muted);
-      margin-top: 2px;
-    }
-    .word-tag {
-      font-size: 10px;
-      padding: 2px 8px;
-      border-radius: 12px;
-      background: rgba(16, 185, 129, 0.15);
-      color: #34d399;
-      display: inline-block;
-      width: fit-content;
-      margin-bottom: 2px;
-    }
-    .word-tag.listen { background: rgba(227, 179, 65, 0.15); color: #fbbf24; }
-    .word-tag.reading { background: rgba(248, 81, 73, 0.15); color: #f87171; }
-    .check-word-btn {
-      background: none;
-      border: 1px solid var(--border);
-      border-radius: 8px;
-      color: var(--text-muted);
-      font-size: 11px;
-      padding: 6px 10px;
-      cursor: pointer;
-    }
-    .word-card.mastered .check-word-btn {
-      border-color: var(--emerald);
-      color: var(--emerald);
-    }
 
     /* Checklist */
     .check-item {
@@ -275,7 +303,6 @@
     .check-item.done .check-text { text-decoration: line-through; color: var(--text-muted); }
     .check-sub { font-size: 11px; color: var(--text-muted); margin-top: 2px; }
 
-    /* Inventory Pill */
     .pills { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
     .pill {
       font-size: 12px;
@@ -287,7 +314,6 @@
     .pill.green { background: #064e3b; color: #6ee7b7; border-color: #047857; }
     .pill.red { background: #450a0a; color: #fca5a5; border-color: #991b1b; }
 
-    /* Toast */
     #toast {
       position: fixed;
       top: 40px;
@@ -310,8 +336,8 @@
     }
     .progress-bar-wrap {
       background: var(--card-sub);
-      height: 8px;
-      border-radius: 4px;
+      height: 6px;
+      border-radius: 3px;
       margin: 10px 0 16px;
       overflow: hidden;
     }
@@ -329,29 +355,60 @@
 
   <header>
     <div class="header-top">
-      <span class="badge">凌冥 · 专属保姆级终端</span>
+      <span class="badge">凌冥 · 百词斩终端</span>
       <span class="owner-info">监护人: 薄销 (30岁社畜)</span>
     </div>
-    <h1>四级苟活 · 词库 & 减脂终端</h1>
-    <div class="subtitle">只会数1到4也能过 · 拒绝假大空背词</div>
+    <h1>四级闪卡 · 斩词自留地</h1>
   </header>
 
   <div class="container">
 
-    <!-- TAB 1: 视觉词库 (New!) -->
+    <!-- TAB 1: 闪卡背单词 (类似百词斩/不背单词) -->
     <div id="tab-vocab" class="tab-content active">
-      <div class="card">
-        <div class="card-title"><span class="icon">⚡</span>文盲专属 · 考场视觉高频核心词库</div>
-        <div style="font-size: 12px; color: var(--text-muted); margin-bottom: 8px;">
-          不用背拼写！只要看到形状能认出中文就行，点击右侧标记已掌握：
+      <div class="card" style="padding-bottom: 20px;">
+        <div class="card-title">
+          <span class="icon">⚡</span>
+          <span>四级真题命脉词汇库</span>
         </div>
-        <div style="font-size: 12px; color: var(--text-muted);">已消灭单词：<span id="wordProgress">0/30</span></div>
+        <div style="font-size: 12px; color: var(--text-muted); display: flex; justify-content: space-between;">
+          <span>今日已斩：<b id="masteredCount" style="color: #34d399;">0</b> 词</span>
+          <span>当前总进度：<span id="progressRatio">0 / 0</span></span>
+        </div>
         <div class="progress-bar-wrap">
           <div class="progress-bar" id="wordProgressBar"></div>
         </div>
 
-        <div class="word-grid" id="wordContainer">
-          <!-- 动态渲染词汇卡片 -->
+        <!-- 闪卡主体 -->
+        <div class="flashcard" id="flashCard">
+          <span class="fc-tag" id="cardTag">写作必备</span>
+          <span class="fc-counter" id="cardCounter">#1</span>
+          
+          <div class="fc-word" id="cardWord">opportunity</div>
+          <div class="fc-phonetic" onclick="speakCurrentWord()">
+            <span id="cardPhonetic">/ˌɒpəˈtjuːnəti/</span>
+            <svg viewBox="0 0 24 24"><path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z"/></svg>
+          </div>
+          
+          <div class="fc-meaning blur" id="cardMeaning" onclick="toggleMeaningBlur()">
+            点击揭晓中文释义
+          </div>
+          
+          <div class="fc-tip" id="cardTip">
+            💡 考场视觉定位：看到双op长词，作文写'给机会'闭眼套用
+          </div>
+        </div>
+
+        <!-- 操作按钮 -->
+        <div class="fc-actions">
+          <button class="btn-action btn-forget" onclick="nextCard(false)">
+            <span>❌ 没印象</span>
+          </button>
+          <button class="btn-action btn-hint" onclick="toggleMeaningBlur()">
+            <span>👁️ 偷看释义</span>
+          </button>
+          <button class="btn-action btn-know" onclick="nextCard(true)">
+            <span>✅ 拿下了</span>
+          </button>
         </div>
       </div>
     </div>
@@ -481,7 +538,7 @@ Taking all these factors into consideration, we should take a rational attitude 
   <nav class="tab-bar">
     <button class="tab-btn active" onclick="switchTab('vocab')">
       <svg viewBox="0 0 24 24"><path d="M4 6H2v14c0 1.1.9 2 2 2h14v-2H4V6zm16-4H8c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm-1 9H9V9h10v2zm-4 4H9v-2h6v2zm4-8H9V5h10v2z"/></svg>
-      视觉词库
+      斩词闪卡
     </button>
     <button class="tab-btn" onclick="switchTab('cet4')">
       <svg viewBox="0 0 24 24"><path d="M12 3L1 9l4 2.18v6L12 21l7-3.82v-6l2-1.09V17h2V9L12 3zm6.82 6L12 12.72 5.18 9 12 5.28 18.82 9zM17 15.99l-5 2.73-5-2.73v-3.72L12 15l5-2.73v3.72z"/></svg>
@@ -498,74 +555,106 @@ Taking all these factors into consideration, we should take a rational attitude 
   </nav>
 
   <script>
+    // 四级精选高频真题词库（百词斩模式）
     const VOCAB_DATA = [
-      { en: "opportunity", cn: "机会 (考场超高频)", tip: "视觉联想：两个op开头的长词，作文写'给机会'必用", tag: "写作必备", type: "writing" },
-      { en: "convenient", cn: "便利的 / 方便的", tip: "视听一致：听力常读'肯威捏特'，指生活方便", tag: "听力高频", type: "listen" },
-      { en: "traditional", cn: "传统的 (翻译常考)", tip: "看到tra开头就认准'传统'，翻译剪纸、中秋常考", tag: "翻译必备", type: "reading" },
-      { en: "increase", cn: "增加 / 上升", tip: "阅读题图表题必考，看到in-crease就联想上升", tag: "阅读定位", type: "reading" },
-      { en: "decrease", cn: "减少 / 下降", tip: "跟increase反着来，de开头就是往下掉", tag: "阅读定位", type: "reading" },
-      { en: "benefit", cn: "好处 / 益处", tip: "作文万能词：brings many benefits（带来很多好处）", tag: "写作必备", type: "writing" },
-      { en: "attitude", cn: "态度", tip: "作文第二句：take a rational attitude（采取理性态度）", tag: "写作必备", type: "writing" },
-      { en: "society", cn: "社会", tip: "第一句：development of modern society（现代社会发展）", tag: "写作必备", type: "writing" },
-      { en: "environment", cn: "环境", tip: "长词保护伞：保护环境 protect the environment", tag: "翻译高频", type: "reading" },
-      { en: "technology", cn: "科技 / 技术", tip: "常考智能手机、互联网背景词", tag: "阅读定位", type: "reading" },
-      { en: "important", cn: "重要的 (替代词: crucial)", tip: "只会写important没关系，拼写千万别写错", tag: "写作必备", type: "writing" },
-      { en: "healthy", cn: "健康的", tip: "听力饮食篇高频：healthy lifestyle", tag: "听力高频", type: "listen" },
-      { en: "problem", cn: "问题 / 困难", tip: "solve difficult problems（解决难题）", tag: "写作必备", type: "writing" },
-      { en: "improve", cn: "提升 / 改善", tip: "improve ourselves（提升我们自己）", tag: "写作必备", type: "writing" },
-      { en: "valuable", cn: "宝贵的 / 有价值的", tip: "valuable time（宝贵的时间）", tag: "写作必备", type: "writing" },
-      { en: "influence", cn: "影响", tip: "阅读理解常考谁对谁产生影响", tag: "阅读定位", type: "reading" },
-      { en: "challenge", cn: "挑战 / 难关", tip: "遇到难关就选face the challenge", tag: "阅读定位", type: "reading" },
-      { en: "education", cn: "教育", tip: "大学生活、网课题材必考词", tag: "听力高频", type: "listen" },
-      { en: "government", cn: "政府 / 官方", tip: "翻译题常考'政府采取措施支持传统文化'", tag: "翻译必备", type: "reading" },
-      { en: "culture", cn: "文化 (中国传统文化)", tip: "Chinese traditional culture，翻译题送分主语", tag: "翻译必备", type: "reading" },
-      { en: "generation", cn: "一代人 / 年轻一代", tip: "young generation 指你们这群年轻人", tag: "阅读定位", type: "reading" },
-      { en: "passenger", cn: "乘客 (高铁/飞机)", tip: "听力交通广播题必考视听一致词", tag: "听力高频", type: "listen" },
-      { en: "schedule", cn: "时间表 / 日程", tip: "听力预约医生、改签车票必念'塞旧尔'", tag: "听力高频", type: "listen" },
-      { en: "financial", cn: "财务的 / 经济的", tip: "老头本行：看到finan开头就联想钱和算账", tag: "阅读定位", type: "reading" },
-      { en: "community", cn: "社区 / 群体", tip: "大学校园、社区活动背景词", tag: "听力高频", type: "listen" },
-      { en: "pollution", cn: "污染", tip: "air/water pollution，环境保护题核心", tag: "翻译必备", type: "reading" },
-      { en: "horizon", cn: "眼界 / 视野", tip: "作文万能词：broaden our horizons（拓宽眼界）", tag: "写作必备", type: "writing" },
-      { en: "rational", cn: "理性的", tip: "作文结尾：take a rational attitude（理性态度）", tag: "写作必备", type: "writing" },
-      { en: "meaningful", cn: "有意义的", tip: "作文最后一句：make our life more meaningful", tag: "写作必备", type: "writing" },
-      { en: "comfortable", cn: "舒适的", tip: "作文第二段：make our life convenient and comfortable", tag: "写作必备", type: "writing" }
+      { en: "opportunity", ph: "/ˌɒpəˈtjuːnəti/", cn: "n. 机会，良机", tip: "作文必杀：双op开头的长词，凡是'提供机会'就写 provide opportunities", tag: "写作必备" },
+      { en: "convenient", ph: "/kənˈviːniənt/", cn: "adj. 便利的，方便的", tip: "听力高频：读音像'肯威捏特'，指生活/购物方便", tag: "听力高频" },
+      { en: "traditional", ph: "/trəˈdɪʃənl/", cn: "adj. 传统的", tip: "翻译必背：tra开头就认准'传统'，剪纸、中秋、汉服全用它", tag: "翻译必备" },
+      { en: "increase", ph: "/ɪnˈkriːs/", cn: "v./n. 增加，上升", tip: "图表/阅读：看到in-crease就联想往上飙升", tag: "阅读定位" },
+      { en: "decrease", ph: "/dɪˈkriːs/", cn: "v./n. 减少，下降", tip: "阅读定位：de开头就往下掉，和increase是对子", tag: "阅读定位" },
+      { en: "benefit", ph: "/ˈbenɪfɪt/", cn: "n. 好处，利益 v. 得益", tip: "作文骨架：brings many benefits（带来很多好处）", tag: "写作必备" },
+      { en: "attitude", ph: "/ˈætɪtjuːd/", cn: "n. 态度，看法", tip: "作文结尾：take a rational attitude（采取理性态度）", tag: "写作必备" },
+      { en: "society", ph: "/səˈsaɪəti/", cn: "n. 社会", tip: "作文第一句：modern society（现代社会）", tag: "写作必备" },
+      { en: "environment", ph: "/ɪnˈvaɪrənmənt/", cn: "n. 环境", tip: "长词保护伞：protect the environment（保护环境）", tag: "翻译必备" },
+      { en: "technology", ph: "/tekˈnɒlədʒi/", cn: "n. 科技，技术", tip: "高频常客：指智能手机、AI、互联网技术", tag: "阅读定位" },
+      { en: "important", ph: "/ɪmˈpɔːtnt/", cn: "adj. 重要的", tip: "只会写important没关系，拼写工整就得分", tag: "写作必备" },
+      { en: "healthy", ph: "/ˈhelθi/", cn: "adj. 健康的", tip: "听力对话：healthy lifestyle（健康生活方式）", tag: "听力高频" },
+      { en: "problem", ph: "/ˈprɒbləm/", cn: "n. 问题，难题", tip: "作文万能：solve difficult problems（解决难题）", tag: "写作必备" },
+      { en: "improve", ph: "/ɪmˈpruːv/", cn: "v. 提升，改善", tip: "作文加分：improve ourselves（提升自我）", tag: "写作必备" },
+      { en: "valuable", ph: "/ˈvæljuəbl/", cn: "adj. 宝贵的，贵重的", tip: "作文套话：valuable time（宝贵的时间）", tag: "写作必备" },
+      { en: "influence", ph: "/ˈɪnfluəns/", cn: "n./v. 影响", tip: "阅读定位：题干常问'What influences...'", tag: "阅读定位" },
+      { en: "challenge", ph: "/ˈtʃælɪndʒ/", cn: "n. 挑战 v. 向…挑战", tip: "阅读常客：face challenges（直面挑战）", tag: "阅读定位" },
+      { en: "education", ph: "/ˌedʒuˈkeɪʃn/", cn: "n. 教育", tip: "校园题材必考词，网课、大学教育必出", tag: "听力高频" },
+      { en: "government", ph: "/ˈɡʌvənmənt/", cn: "n. 政府", tip: "翻译必背：政府采取措施...（The government takes steps...）", tag: "翻译必备" },
+      { en: "culture", ph: "/ˈkʌltʃə/", cn: "n. 文化，文明", tip: "Chinese traditional culture（中国传统文化送分主语）", tag: "翻译必备" },
+      { en: "generation", ph: "/ˌdʒenəˈreɪʃn/", cn: "n. 一代人，产生", tip: "young generation 指你们这群大学生年轻人", tag: "阅读定位" },
+      { en: "passenger", ph: "/ˈpæsɪndʒə/", cn: "n. 乘客，旅客", tip: "听力广播：高铁、火车站、机场播报必考", tag: "听力高频" },
+      { en: "schedule", ph: "/ˈʃedjuːl/", cn: "n. 时间表，日程", tip: "听力读'塞旧尔'，改约时间、预约看医生必考", tag: "听力高频" },
+      { en: "financial", ph: "/faɪˈnænʃl/", cn: "adj. 财务的，金融的", tip: "老头老本行：看到finan就联想钱和算账", tag: "阅读定位" },
+      { en: "community", ph: "/kəˈmjuːnəti/", cn: "n. 社区，社会团体", tip: "大学社团、社区志愿者题材背景词", tag: "听力高频" },
+      { en: "pollution", ph: "/pəˈluːʃn/", cn: "n. 污染", tip: "环保篇必出：air/water pollution（空气/水污染）", tag: "翻译必备" },
+      { en: "horizon", ph: "/həˈraɪzn/", cn: "n. 眼界，地平线", tip: "作文加分名句：broaden our horizons（开阔眼界）", tag: "写作必备" },
+      { en: "rational", ph: "/ˈræʃnəl/", cn: "adj. 理性的，合理的", tip: "作文总结句：take a rational attitude（理性对待）", tag: "写作必备" },
+      { en: "meaningful", ph: "/ˈmiːnɪŋfl/", cn: "adj. 有意义的", tip: "作文结尾收束：make our life more meaningful", tag: "写作必备" },
+      { en: "comfortable", ph: "/ˈkʌmftəbl/", cn: "adj. 舒服的，舒适的", tip: "convenient and comfortable（方便又舒适）", tag: "写作必备" },
+      { en: "consume", ph: "/kənˈsjuːm/", cn: "v. 消耗，消费", tip: "阅读经济篇：consumer指消费者，consume指消耗", tag: "阅读定位" },
+      { en: "protect", ph: "/prəˈtekt/", cn: "v. 保护，防护", tip: "简单但重要：protect cultural heritage（保护文化遗产）", tag: "翻译必备" },
+      { en: "express", ph: "/ɪkˈspres/", cn: "v. 表达 n. 特快列车", tip: "听力/写作：express feelings/opinions（表达观点）", tag: "听力高频" },
+      { en: "prepare", ph: "/prɪˈpeə/", cn: "v. 准备，预备", tip: "prepare for CET-4（准备四级考试）", tag: "写作必备" },
+      { en: "discover", ph: "/dɪˈskʌvə/", cn: "v. 发现，发掘", tip: "阅读科技探索篇核心定位词", tag: "阅读定位" },
+      { en: "popular", ph: "/ˈpɒpjələ/", cn: "adj. 流行的，受欢迎的", tip: "is getting more and more popular（越来越受欢迎）", tag: "翻译必备" },
+      { en: "decision", ph: "/dɪˈsɪʒn/", cn: "n. 决定，决议", tip: "make a wise decision（做出明智决定）", tag: "写作必备" },
+      { en: "encourage", ph: "/ɪnˈkʌrɪdʒ/", cn: "v. 鼓励，促进", tip: "encourage students to read more（鼓励多读书）", tag: "写作必备" },
+      { en: "relationship", ph: "/rɪˈleɪʃnʃɪp/", cn: "n. 关系，联系", tip: "人际交往篇高频：interpersonal relationship", tag: "阅读定位" },
+      { en: "balance", ph: "/ˈbæləns/", cn: "n./v. 平衡", tip: "keep a balance between study and play（劳逸结合）", tag: "写作必备" }
     ];
 
-    let mastered = JSON.parse(localStorage.getItem('mastered_words') || '[]');
+    let currentIndex = 0;
+    let masteredWords = JSON.parse(localStorage.getItem('lingming_mastered_words') || '[]');
 
-    function renderWords() {
-      const c = document.getElementById('wordContainer');
-      c.innerHTML = '';
-      let masteredCount = 0;
-      VOCAB_DATA.forEach((w, idx) => {
-        const isM = mastered.includes(w.en);
-        if (isM) masteredCount++;
-        const card = document.createElement('div');
-        card.className = 'word-card' + (isM ? ' mastered' : '');
-        card.innerHTML = `
-          <div class="word-left">
-            <span class="word-tag ${w.type}">${w.tag}</span>
-            <div class="word-en">${w.en}</div>
-            <div class="word-cn">${w.cn}</div>
-            <div class="word-tip">💡 ${w.tip}</div>
-          </div>
-          <button class="check-word-btn" onclick="toggleWordMaster('${w.en}')">${isM ? '已拿下' : '消灭它'}</button>
-        `;
-        c.appendChild(card);
-      });
-      document.getElementById('wordProgress').innerText = `${masteredCount}/${VOCAB_DATA.length}`;
-      document.getElementById('wordProgressBar').style.width = (masteredCount / VOCAB_DATA.length * 100) + '%';
+    function renderCurrentCard() {
+      if (currentIndex >= VOCAB_DATA.length) {
+        currentIndex = 0;
+      }
+      const item = VOCAB_DATA[currentIndex];
+      document.getElementById('cardTag').innerText = item.tag;
+      document.getElementById('cardCounter').innerText = `#${currentIndex + 1}/${VOCAB_DATA.length}`;
+      document.getElementById('cardWord').innerText = item.en;
+      document.getElementById('cardPhonetic').innerText = item.ph;
+      
+      const mEl = document.getElementById('cardMeaning');
+      mEl.innerText = item.cn;
+      mEl.classList.add('blur'); // 默认模糊，模仿百词斩遮挡记忆
+      
+      document.getElementById('cardTip').innerText = item.tip;
+      updateProgress();
     }
 
-    function toggleWordMaster(en) {
-      if (mastered.includes(en)) {
-        mastered = mastered.filter(x => x !== en);
-      } else {
-        mastered.push(en);
-        showToast('已斩杀 1 个核心词！');
+    function toggleMeaningBlur() {
+      const mEl = document.getElementById('cardMeaning');
+      mEl.classList.toggle('blur');
+    }
+
+    function speakCurrentWord() {
+      const word = VOCAB_DATA[currentIndex].en;
+      if ('speechSynthesis' in window) {
+        const utter = new SpeechSynthesisUtterance(word);
+        utter.lang = 'en-US';
+        utter.rate = 0.9;
+        window.speechSynthesis.speak(utter);
       }
-      localStorage.setItem('mastered_words', JSON.stringify(mastered));
-      renderWords();
+    }
+
+    function nextCard(known) {
+      const currentWord = VOCAB_DATA[currentIndex].en;
+      if (known) {
+        if (!masteredWords.includes(currentWord)) {
+          masteredWords.push(currentWord);
+          localStorage.setItem('lingming_mastered_words', JSON.stringify(masteredWords));
+          showToast('已斩杀：' + currentWord);
+        }
+      } else {
+        showToast('记入错词本，多瞅两眼！');
+      }
+      currentIndex = (currentIndex + 1) % VOCAB_DATA.length;
+      renderCurrentCard();
+    }
+
+    function updateProgress() {
+      document.getElementById('masteredCount').innerText = masteredWords.length;
+      document.getElementById('progressRatio').innerText = `${masteredWords.length} / ${VOCAB_DATA.length}`;
+      const pct = (masteredWords.length / VOCAB_DATA.length) * 100;
+      document.getElementById('wordProgressBar').style.width = pct + '%';
     }
 
     function switchTab(tabId) {
@@ -624,7 +713,7 @@ Taking all these factors into consideration, we should take a rational attitude 
     }
 
     window.addEventListener('DOMContentLoaded', () => {
-      renderWords();
+      renderCurrentCard();
       renderChecklist();
       document.getElementById('memoInput').value = localStorage.getItem('lingming_memo') || '';
     });
