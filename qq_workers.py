@@ -45,11 +45,18 @@ async def _tool_chat(messages,max_rounds=3):
 async def _private_reply():
     global _private_pending
     try:
-        await asyncio.sleep(random.randint(3,10));from qq_bot import send_qq_msg
+        await asyncio.sleep(random.randint(1,3));from qq_bot import send_qq_msg
         hist=recent("message",30,with_ids=True);reply=(await _tool_chat([{"role":"system","content":build_context()}]+hist)).strip()
         if not reply:return
-        clean=_REPLY_RE.sub('',_AT_RE.sub('',reply)).strip();save_message("assistant",clean,scene="message",source="qq")
-        await send_qq_msg("private",int(OWNER_ID),_segments(reply))
+        # 按换行切成独立气泡逐条发送
+        chunks=[c.strip() for c in re.split(r'\n+',reply) if c.strip()]
+        for i,chunk in enumerate(chunks):
+            clean=_REPLY_RE.sub('',_AT_RE.sub('',chunk)).strip()
+            if clean:
+                save_message("assistant",clean,scene="message",source="qq")
+                await send_qq_msg("private",int(OWNER_ID),_segments(chunk))
+                if i<len(chunks)-1:
+                    await asyncio.sleep(random.uniform(1.0,2.2))
     except asyncio.CancelledError:pass
     finally:
         if _private_pending is asyncio.current_task():_private_pending=None
@@ -57,13 +64,19 @@ async def _private_reply():
 async def _group_reply(gid,force=False):
     task=asyncio.current_task()
     try:
-        await asyncio.sleep(random.randint(4,10));from qq_bot import send_qq_msg
+        await asyncio.sleep(random.randint(2,5));from qq_bot import send_qq_msg
         scene=f"group_qq_{gid}";hist=recent(scene,50,with_ids=True)
         instruction=GROUP_CHAT_EXAMPLE+("\nYou were directly mentioned and must reply; do not output PASS." if force else "")
         reply=(await _tool_chat([{"role":"system","content":instruction+"\n\n"+build_context()}]+hist)).strip()
         if not reply or (not force and re.search(r'\bPASS\b',reply,re.I)):return
-        clean=_REPLY_RE.sub('',_AT_RE.sub('',reply)).strip();save_message("assistant",f"{BOT_NAME}: {clean}",scene=scene,source="qq-group")
-        await send_qq_msg("group",int(gid),_segments(reply))
+        chunks=[c.strip() for c in re.split(r'\n+',reply) if c.strip()]
+        for i,chunk in enumerate(chunks):
+            clean=_REPLY_RE.sub('',_AT_RE.sub('',chunk)).strip()
+            if clean:
+                save_message("assistant",f"{BOT_NAME}: {clean}",scene=scene,source="qq-group")
+                await send_qq_msg("group",int(gid),_segments(chunk))
+                if i<len(chunks)-1:
+                    await asyncio.sleep(random.uniform(1.0,2.0))
     except asyncio.CancelledError:pass
     finally:
         if _group_pending.get(gid) is task:_group_pending.pop(gid,None)
