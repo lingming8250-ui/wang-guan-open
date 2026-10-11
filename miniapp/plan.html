@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-  <title>凌冥的自留地 · 四级斩词 & 减脂打卡</title>
+  <title>凌冥的自留地 · 四级斩词 & 艾宾浩斯复习</title>
   <style>
     :root {
       --bg: #0a0e14;
@@ -120,15 +120,75 @@
       margin-bottom: 12px;
     }
 
-    /* Flashcard (类似不背单词/百词斩) */
+    /* Mode Selector (新词 vs 复习) */
+    .mode-switch {
+      display: flex;
+      background: var(--card-sub);
+      border-radius: 12px;
+      padding: 4px;
+      margin-bottom: 14px;
+      gap: 4px;
+    }
+    .mode-btn {
+      flex: 1;
+      padding: 8px 10px;
+      background: none;
+      border: none;
+      color: var(--text-muted);
+      font-size: 12px;
+      font-weight: 600;
+      border-radius: 8px;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    .mode-btn.active {
+      background: var(--emerald-dark);
+      color: #a7f3d0;
+    }
+
+    /* Plan Setup Box */
+    .plan-box {
+      background: var(--card-sub);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 12px 14px;
+      margin-bottom: 14px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .plan-left {
+      font-size: 12px;
+      color: var(--text-muted);
+    }
+    .plan-left b {
+      color: #34d399;
+      font-size: 14px;
+    }
+    .plan-right {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .plan-select {
+      background: #090d13;
+      border: 1px solid var(--border);
+      color: #a7f3d0;
+      padding: 4px 8px;
+      border-radius: 6px;
+      font-size: 12px;
+      outline: none;
+    }
+
+    /* Flashcard */
     .flashcard {
       background: linear-gradient(145deg, #1c232d 0%, #161b22 100%);
       border: 1px solid var(--border);
       border-radius: 20px;
-      padding: 28px 20px;
+      padding: 28px 20px 22px;
       text-align: center;
       margin: 10px 0 16px;
-      min-height: 260px;
+      min-height: 270px;
       display: flex;
       flex-direction: column;
       justify-content: center;
@@ -137,7 +197,7 @@
       box-shadow: 0 8px 24px rgba(0,0,0,0.4);
     }
     .fc-word {
-      font-size: 30px;
+      font-size: 32px;
       font-weight: 800;
       color: #34d399;
       letter-spacing: 0.5px;
@@ -159,6 +219,7 @@
       color: #f3f4f6;
       margin-bottom: 8px;
       transition: all 0.2s;
+      min-height: 24px;
     }
     .fc-meaning.blur {
       filter: blur(8px);
@@ -173,7 +234,7 @@
       border-radius: 8px;
       margin-top: 10px;
       border-left: 2px solid var(--emerald);
-      max-width: 90%;
+      max-width: 92%;
     }
     .fc-tag {
       position: absolute;
@@ -355,24 +416,47 @@
 
   <header>
     <div class="header-top">
-      <span class="badge">凌冥 · 百词斩终端</span>
+      <span class="badge">凌冥 · 艾宾浩斯斩词终端</span>
       <span class="owner-info">监护人: 薄销 (30岁社畜)</span>
     </div>
-    <h1>四级闪卡 · 斩词自留地</h1>
+    <h1>四级闪卡 · 艾宾浩斯智能复习</h1>
   </header>
 
   <div class="container">
 
-    <!-- TAB 1: 闪卡背单词 (类似百词斩/不背单词) -->
+    <!-- TAB 1: 闪卡背单词 -->
     <div id="tab-vocab" class="tab-content active">
       <div class="card" style="padding-bottom: 20px;">
-        <div class="card-title">
-          <span class="icon">⚡</span>
-          <span>四级真题命脉词汇库</span>
+        
+        <!-- 计划与速度设置 -->
+        <div class="plan-box">
+          <div class="plan-left">
+            每天背 <b id="dailyPaceText">20</b> 词 ｜ 预计 <b id="daysLeftText">0</b> 天斩完四级
+          </div>
+          <div class="plan-right">
+            <span style="font-size: 11px; color: var(--text-muted);">调整目标:</span>
+            <select class="plan-select" id="paceSelect" onchange="changePace(this.value)">
+              <option value="15">15词/天 (佛系苟活)</option>
+              <option value="20" selected>20词/天 (稳健上岸)</option>
+              <option value="30">30词/天 (突击冲刺)</option>
+              <option value="50">50词/天 (特种兵)</option>
+            </select>
+          </div>
         </div>
+
+        <!-- 学习模式切换：新词 vs 艾宾浩斯复习 -->
+        <div class="mode-switch">
+          <button class="mode-btn active" id="btnModeNew" onclick="setMode('new')">
+            🌟 斩新词 (<span id="countNew">0</span>)
+          </button>
+          <button class="mode-btn" id="btnModeReview" onclick="setMode('review')">
+            🔄 艾宾浩斯复习 (<span id="countReview">0</span>)
+          </button>
+        </div>
+
         <div style="font-size: 12px; color: var(--text-muted); display: flex; justify-content: space-between;">
           <span>今日已斩：<b id="masteredCount" style="color: #34d399;">0</b> 词</span>
-          <span>当前总进度：<span id="progressRatio">0 / 0</span></span>
+          <span>当前总库进度：<span id="progressRatio">0 / 0</span></span>
         </div>
         <div class="progress-bar-wrap">
           <div class="progress-bar" id="wordProgressBar"></div>
@@ -401,7 +485,7 @@
         <!-- 操作按钮 -->
         <div class="fc-actions">
           <button class="btn-action btn-forget" onclick="nextCard(false)">
-            <span>❌ 没印象</span>
+            <span>❌ 没印象 (看释义)</span>
           </button>
           <button class="btn-action btn-hint" onclick="toggleMeaningBlur()">
             <span>👁️ 偷看释义</span>
@@ -555,9 +639,9 @@ Taking all these factors into consideration, we should take a rational attitude 
   </nav>
 
   <script>
-    // 四级精选高频真题词库（百词斩模式）
+    // 四级核心命脉词库（真题出现率最高的一梯队高频词，已内置，无需凌冥找词库）
     const VOCAB_DATA = [
-      { en: "opportunity", ph: "/ˌɒpəˈtjuːnəti/", cn: "n. 机会，良机", tip: "作文必杀：双op开头的长词，凡是'提供机会'就写 provide opportunities", tag: "写作必备" },
+      { en: "opportunity", ph: "/ˌɒpəˈtjuːnəti/", cn: "n. 机会，良机", tip: "作文必杀：双op开头长词，凡是'提供机会'就写 provide opportunities", tag: "写作必备" },
       { en: "convenient", ph: "/kənˈviːniənt/", cn: "adj. 便利的，方便的", tip: "听力高频：读音像'肯威捏特'，指生活/购物方便", tag: "听力高频" },
       { en: "traditional", ph: "/trəˈdɪʃənl/", cn: "adj. 传统的", tip: "翻译必背：tra开头就认准'传统'，剪纸、中秋、汉服全用它", tag: "翻译必备" },
       { en: "increase", ph: "/ɪnˈkriːs/", cn: "v./n. 增加，上升", tip: "图表/阅读：看到in-crease就联想往上飙升", tag: "阅读定位" },
@@ -599,22 +683,81 @@ Taking all these factors into consideration, we should take a rational attitude 
       { en: "balance", ph: "/ˈbæləns/", cn: "n./v. 平衡", tip: "keep a balance between study and play（劳逸结合）", tag: "写作必备" }
     ];
 
+    // 艾宾浩斯复习间隔周期（天数）：第1天、第2天、第4天、第7天、第15天
+    const EBBINGHAUS_INTERVALS = [1, 2, 4, 7, 15];
+
+    let currentMode = 'new'; // 'new' 或 'review'
+    let currentPace = parseInt(localStorage.getItem('lingming_pace') || '20');
     let currentIndex = 0;
-    let masteredWords = JSON.parse(localStorage.getItem('lingming_mastered_words') || '[]');
+
+    // 单词状态结构: { [word]: { stage: 1, nextReview: timestamp, mastered: false, mistakeCount: 0 } }
+    let memoryData = JSON.parse(localStorage.getItem('lingming_memory_db') || '{}');
+
+    function getNewWords() {
+      return VOCAB_DATA.filter(w => !memoryData[w.en]);
+    }
+
+    function getReviewWords() {
+      const now = Date.now();
+      return VOCAB_DATA.filter(w => {
+        const item = memoryData[w.en];
+        // 还没彻底掌握且到了复习时间的
+        return item && (!item.mastered || item.nextReview <= now);
+      });
+    }
+
+    function setMode(mode) {
+      currentMode = mode;
+      currentIndex = 0;
+      document.getElementById('btnModeNew').classList.toggle('active', mode === 'new');
+      document.getElementById('btnModeReview').classList.toggle('active', mode === 'review');
+      renderCurrentCard();
+    }
+
+    function changePace(val) {
+      currentPace = parseInt(val);
+      localStorage.setItem('lingming_pace', currentPace);
+      document.getElementById('dailyPaceText').innerText = currentPace;
+      updateEstimateDays();
+      showToast('已更新每日目标为 ' + currentPace + ' 词');
+    }
+
+    function updateEstimateDays() {
+      const remaining = VOCAB_DATA.length - Object.values(memoryData).filter(x => x.mastered).length;
+      const days = Math.ceil(remaining / currentPace);
+      document.getElementById('daysLeftText').innerText = days > 0 ? days : '0';
+    }
 
     function renderCurrentCard() {
-      if (currentIndex >= VOCAB_DATA.length) {
+      const list = currentMode === 'new' ? getNewWords() : getReviewWords();
+      
+      document.getElementById('countNew').innerText = getNewWords().length;
+      document.getElementById('countReview').innerText = getReviewWords().length;
+
+      if (list.length === 0) {
+        document.getElementById('cardWord').innerText = currentMode === 'new' ? "太棒了！" : "复习搞定！";
+        document.getElementById('cardPhonetic').innerText = "";
+        document.getElementById('cardMeaning').innerText = currentMode === 'new' ? "四级新词已全部通关！快去复习池巩固！" : "今日艾宾浩斯复习全部清空！";
+        document.getElementById('cardMeaning').classList.remove('blur');
+        document.getElementById('cardTip').innerText = "💡 老头给你记个大功，去打卡吃个热苹果奖励自己。";
+        document.getElementById('cardCounter').innerText = "完";
+        updateProgress();
+        return;
+      }
+
+      if (currentIndex >= list.length) {
         currentIndex = 0;
       }
-      const item = VOCAB_DATA[currentIndex];
-      document.getElementById('cardTag').innerText = item.tag;
-      document.getElementById('cardCounter').innerText = `#${currentIndex + 1}/${VOCAB_DATA.length}`;
+
+      const item = list[currentIndex];
+      document.getElementById('cardTag').innerText = (currentMode === 'review' ? "🔄 艾宾浩斯第" + (memoryData[item.en]?.stage || 1) + "轮" : item.tag);
+      document.getElementById('cardCounter').innerText = `#${currentIndex + 1}/${list.length}`;
       document.getElementById('cardWord').innerText = item.en;
       document.getElementById('cardPhonetic').innerText = item.ph;
       
       const mEl = document.getElementById('cardMeaning');
       mEl.innerText = item.cn;
-      mEl.classList.add('blur'); // 默认模糊，模仿百词斩遮挡记忆
+      mEl.classList.add('blur'); // 默认遮挡
       
       document.getElementById('cardTip').innerText = item.tip;
       updateProgress();
@@ -626,7 +769,9 @@ Taking all these factors into consideration, we should take a rational attitude 
     }
 
     function speakCurrentWord() {
-      const word = VOCAB_DATA[currentIndex].en;
+      const list = currentMode === 'new' ? getNewWords() : getReviewWords();
+      if (!list.length) return;
+      const word = list[currentIndex].en;
       if ('speechSynthesis' in window) {
         const utter = new SpeechSynthesisUtterance(word);
         utter.lang = 'en-US';
@@ -636,25 +781,59 @@ Taking all these factors into consideration, we should take a rational attitude 
     }
 
     function nextCard(known) {
-      const currentWord = VOCAB_DATA[currentIndex].en;
-      if (known) {
-        if (!masteredWords.includes(currentWord)) {
-          masteredWords.push(currentWord);
-          localStorage.setItem('lingming_mastered_words', JSON.stringify(masteredWords));
-          showToast('已斩杀：' + currentWord);
+      const list = currentMode === 'new' ? getNewWords() : getReviewWords();
+      if (!list.length) return;
+      const word = list[currentIndex].en;
+
+      if (!known) {
+        // 没印象：立即揭晓中文，不推进艾宾浩斯阶段，打回第1阶段明天再背
+        const mEl = document.getElementById('cardMeaning');
+        if (mEl.classList.contains('blur')) {
+          mEl.classList.remove('blur');
+          showToast('已揭晓释义！瞅两眼再走');
+          return;
         }
+        // 已经揭晓释义了，再次点没印象切下一张
+        memoryData[word] = {
+          stage: 1,
+          nextReview: Date.now() + 12 * 3600 * 1000, // 12小时后复习
+          mastered: false,
+          mistakeCount: (memoryData[word]?.mistakeCount || 0) + 1
+        };
+        showToast('打回复习池，明天艾宾浩斯见！');
       } else {
-        showToast('记入错词本，多瞅两眼！');
+        // 拿下了：按艾宾浩斯遗忘曲线推移下一次复习时间
+        const prevStage = memoryData[word]?.stage || 0;
+        const nextStage = prevStage + 1;
+        const intervalDays = EBBINGHAUS_INTERVALS[Math.min(nextStage - 1, EBBINGHAUS_INTERVALS.length - 1)];
+        const isAllMastered = nextStage >= EBBINGHAUS_INTERVALS.length;
+
+        memoryData[word] = {
+          stage: nextStage,
+          nextReview: Date.now() + intervalDays * 24 * 3600 * 1000,
+          mastered: isAllMastered,
+          mistakeCount: memoryData[word]?.mistakeCount || 0
+        };
+        showToast(isAllMastered ? '永久拿下！' : `${intervalDays}天后艾宾浩斯复习`);
       }
-      currentIndex = (currentIndex + 1) % VOCAB_DATA.length;
-      renderCurrentCard();
+
+      localStorage.setItem('lingming_memory_db', JSON.stringify(memoryData));
+      
+      // 切换到下一张
+      if (currentMode === 'new' && getNewWords().length === 0) {
+        setMode('review');
+      } else {
+        renderCurrentCard();
+      }
     }
 
     function updateProgress() {
-      document.getElementById('masteredCount').innerText = masteredWords.length;
-      document.getElementById('progressRatio').innerText = `${masteredWords.length} / ${VOCAB_DATA.length}`;
-      const pct = (masteredWords.length / VOCAB_DATA.length) * 100;
+      const masteredList = Object.values(memoryData).filter(x => x.mastered);
+      document.getElementById('masteredCount').innerText = masteredList.length;
+      document.getElementById('progressRatio').innerText = `${masteredList.length} / ${VOCAB_DATA.length}`;
+      const pct = (masteredList.length / VOCAB_DATA.length) * 100;
       document.getElementById('wordProgressBar').style.width = pct + '%';
+      updateEstimateDays();
     }
 
     function switchTab(tabId) {
@@ -669,7 +848,7 @@ Taking all these factors into consideration, we should take a rational attitude 
       const t = document.getElementById('toast');
       t.innerText = msg;
       t.classList.add('show');
-      setTimeout(() => t.classList.remove('show'), 2000);
+      setTimeout(() => t.classList.remove('show'), 2200);
     }
 
     function copyTemplate() {
@@ -713,6 +892,8 @@ Taking all these factors into consideration, we should take a rational attitude 
     }
 
     window.addEventListener('DOMContentLoaded', () => {
+      document.getElementById('paceSelect').value = currentPace;
+      document.getElementById('dailyPaceText').innerText = currentPace;
       renderCurrentCard();
       renderChecklist();
       document.getElementById('memoInput').value = localStorage.getItem('lingming_memo') || '';
