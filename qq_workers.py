@@ -26,25 +26,29 @@ def _segments(text):
     return seg if (reply or _AT_RE.search(text)) else text.strip()
 
 def _split_into_bubbles(text: str) -> list[str]:
-    # 强制将大长句切成自然多气泡
-    # 优先切换行
+    # 强制将长文切成自然的多气泡，绝不产生单独的孤立标点气泡
     raw_lines = [c.strip() for c in re.split(r'\n+', text) if c.strip()]
     bubbles = []
     for line in raw_lines:
-        # 如果单行超过 18 个字，强制顺着标点、问号、叹号或连续空格切开
-        if len(line) > 18:
-            parts = [s.strip() for s in re.split(r'([？！。…~]| {1,})', line) if s.strip()]
-            cur = ""
-            for p in parts:
-                cur += p
-                if len(cur) >= 12 or p in "？！。…~":
-                    bubbles.append(cur.strip())
-                    cur = ""
-            if cur.strip():
-                bubbles.append(cur.strip())
-        else:
+        if len(line) <= 22:
             bubbles.append(line)
-    return [b for b in bubbles if b] or [text.strip()]
+            continue
+        # 按逗号、句号、问号、叹号等句子切分，标点保留在前半句末尾
+        parts = [p.strip() for p in re.split(r'(?<=[，,。？！?!~…])', line) if p.strip()]
+        cur = ""
+        for p in parts:
+            if not cur:
+                cur = p
+            elif len(cur) + len(p) <= 24:
+                cur += p
+            else:
+                bubbles.append(cur.strip())
+                cur = p
+        if cur.strip():
+            bubbles.append(cur.strip())
+    # 过滤掉纯标点的残渣
+    clean_bubbles = [b for b in bubbles if re.search(r'[\w\u4e00-\u9fa5]', b)]
+    return clean_bubbles or [text.strip()]
 
 async def _tool_chat(messages,max_rounds=3):
     for _ in range(max_rounds):
