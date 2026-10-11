@@ -70,20 +70,64 @@ async def reminder_checker(send_callback=None):
                 else:
                     update("reminders",f"id=eq.{row['id']}",{"is_done":True})
 
-async def proactive_loop(send_callback=None):
+async def qq_proactive_loop():
+    """QQ 主动查岗与定时关怀后台任务"""
+    tz = ZoneInfo(DEFAULT_TIMEZONE)
+    owner_id = os.getenv("QQ_OWNER_ID", "").strip()
+    if not owner_id:
+        log.info("QQ_OWNER_ID not set; proactive loop idle")
+        while True:
+            await asyncio.sleep(3600)
+
+    # 每天固定主动推送的时刻点（北京时间）
+    # 08:30 催起早八/问早, 12:20 催午饭, 18:30 催晚饭, 23:45 催睡觉
+    CHECK_HOURS = {"08:30", "12:20", "18:30", "23:45"}
+    sent_keys = set()
+
     while True:
-        await asyncio.sleep(random.randint(900,3600))
-        if not send_callback:continue
-        history=recent("message",30)
-        messages=[{"role":"system","content":PROACTIVE_EXAMPLE}]+history
-        if not history or history[-1].get("role")!="user":messages.append({"role":"user","content":"(background trigger)"})
-        try:
-            text,_=await call_llm(messages,max_tokens=1200,channel="chat")
-        except Exception as exc:
-            log.warning("proactive loop failed: %s",exc);continue
-        s=(text or "").strip()
-        if s.startswith("SEND\n"):
-            await send_callback(s[5:].strip())
+        await asyncio.sleep(30)
+        now = datetime.now(tz)
+        hm = now.strftime("%H:%M")
+        day_str = now.strftime("%Y-%m-%d")
+        key = f"{day_str}_{hm}"
+
+        if hm in CHECK_HOURS and key not in sent_keys:
+            sent_keys.add(key)
+            if len(sent_keys) > 50:
+                sent_keys = set(list(sent_keys)[-20:])
+
+            try:
+                from context import build_context
+                from conversation_store import recent, save_message
+                from qq_bot import send_qq_msg
+
+                hist = recent("message", 20)
+                prompt = (
+                    build_context()
+                    + f"\n\n【当前现实时间】北京时间 {now.strftime('%m月%d日 %H:%M')}\n"
+                    + "【任务指示】你主动在 QQ 上给凌冥发消息。根据当前具体时刻（如果是早八催起床、中午催吃热乎的、傍晚问晚饭、深夜催睡觉）"
+                    + "结合你了解的他的生活细节（哈尔滨降温、肠胃弱、爱口嗨），像真人随手敲手机一样发 1 到 2 句短促口语。"
+                    + "严禁做作深情，严禁说教，不带句号，直接输出内容。"
+                )
+                messages = [{"role": "system", "content": prompt}]
+                if hist:
+                    messages.extend(hist[-6:])
+                messages.append({"role": "user", "content": "(系统定时触发：主动给他发一条消息)"})
+
+                text, _ = await call_llm(messages, max_tokens=150, channel="qq")
+                msg = (text or "").strip()
+                if msg:
+                    from qq_workers import _split_into_bubbles, _segments
+                    chunks = _split_into_bubbles(msg)
+                    for i, chunk in enumerate(chunks):
+                        if chunk:
+                            save_message("assistant", chunk, scene="message", source="qq-proactive")
+                            await send_qq_msg("private", int(owner_id), _segments(chunk))
+                            if i < len(chunks) - 1:
+                                await asyncio.sleep(random.uniform(1.2, 2.2))
+                    log.info("Sent QQ proactive message: %s", msg)
+            except Exception as exc:
+                log.warning("QQ proactive push failed: %s", exc)
 
 async def summary_loop():
     tz=ZoneInfo(DEFAULT_TIMEZONE)
@@ -117,4 +161,4 @@ async def platform_maintenance_loop():
             await asyncio.to_thread(run_platform_summary_maintenance)
         except Exception as exc:log.warning("platform maintenance failed: %s",exc)
 
-REGISTERED_TASKS=[reminder_checker,summary_loop,platform_compress_loop,platform_maintenance_loop]
+REGISTERED_TASKS=[reminder_checker,qq_proactive_loop,summary_loop,platform_compress_loop,platform_maintenance_loop]
