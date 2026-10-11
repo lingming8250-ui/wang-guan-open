@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-  <title>凌冥的自留地 · 四级苟活 & 减脂打卡</title>
+  <title>凌冥的自留地 · 四级苟活 & 词库打卡</title>
   <style>
     :root {
       --bg: #0d1117;
@@ -24,7 +24,7 @@
       background-color: var(--bg);
       color: var(--text);
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-      padding-bottom: 90px;
+      padding-bottom: 95px;
       line-height: 1.5;
     }
     header {
@@ -70,13 +70,13 @@
       bottom: 0;
       left: 0;
       right: 0;
-      background: rgba(22, 27, 34, 0.92);
+      background: rgba(22, 27, 34, 0.95);
       backdrop-filter: blur(20px);
       -webkit-backdrop-filter: blur(20px);
       border-top: 1px solid var(--border);
       display: flex;
       justify-content: space-around;
-      padding: 8px 10px calc(env(safe-area-inset-bottom) + 8px);
+      padding: 8px 6px calc(env(safe-area-inset-bottom) + 8px);
       z-index: 100;
     }
     .tab-btn {
@@ -84,12 +84,12 @@
       background: none;
       border: none;
       color: var(--text-muted);
-      font-size: 12px;
+      font-size: 11px;
       font-weight: 500;
       display: flex;
       flex-direction: column;
       align-items: center;
-      gap: 4px;
+      gap: 3px;
       cursor: pointer;
       transition: color 0.2s;
     }
@@ -97,11 +97,11 @@
       color: var(--emerald);
       font-weight: 700;
     }
-    .tab-btn svg { width: 22px; height: 22px; fill: currentColor; }
+    .tab-btn svg { width: 20px; height: 20px; fill: currentColor; }
 
     /* Container */
     .container {
-      padding: 16px 16px;
+      padding: 16px 14px;
       max-width: 600px;
       margin: 0 auto;
     }
@@ -115,7 +115,7 @@
       border-radius: var(--radius);
       padding: 16px;
       margin-bottom: 16px;
-      box-shadow: 0 4px 12px rgba(0,0,0,0.2);
+      box-shadow: 0 4px 12px rgba(0,0,0,0.25);
     }
     .card-title {
       font-size: 16px;
@@ -126,11 +126,9 @@
       gap: 8px;
       margin-bottom: 12px;
     }
-    .card-title .icon {
-      font-size: 18px;
-    }
+    .card-title .icon { font-size: 18px; }
 
-    /* CET-4 Strategy list */
+    /* Rules */
     .rule-box {
       background: var(--card-sub);
       border-left: 3px solid var(--emerald);
@@ -174,6 +172,78 @@
     }
     .copy-btn:active { background: var(--emerald-dark); }
 
+    /* Vocabulary Cards */
+    .word-grid {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 10px;
+      margin-top: 10px;
+    }
+    .word-card {
+      background: var(--card-sub);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 12px 14px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      transition: all 0.2s;
+    }
+    .word-card.mastered {
+      opacity: 0.55;
+      background: #090d13;
+      border-color: #21262d;
+    }
+    .word-card.mastered .word-en {
+      text-decoration: line-through;
+      color: var(--text-muted);
+    }
+    .word-left {
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+    }
+    .word-en {
+      font-size: 16px;
+      font-weight: 700;
+      color: #a7f3d0;
+      letter-spacing: 0.3px;
+    }
+    .word-cn {
+      font-size: 13px;
+      color: #e5e7eb;
+    }
+    .word-tip {
+      font-size: 11px;
+      color: var(--text-muted);
+      margin-top: 2px;
+    }
+    .word-tag {
+      font-size: 10px;
+      padding: 2px 8px;
+      border-radius: 12px;
+      background: rgba(16, 185, 129, 0.15);
+      color: #34d399;
+      display: inline-block;
+      width: fit-content;
+      margin-bottom: 2px;
+    }
+    .word-tag.listen { background: rgba(227, 179, 65, 0.15); color: #fbbf24; }
+    .word-tag.reading { background: rgba(248, 81, 73, 0.15); color: #f87171; }
+    .check-word-btn {
+      background: none;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      color: var(--text-muted);
+      font-size: 11px;
+      padding: 6px 10px;
+      cursor: pointer;
+    }
+    .word-card.mastered .check-word-btn {
+      border-color: var(--emerald);
+      color: var(--emerald);
+    }
+
     /* Checklist */
     .check-item {
       display: flex;
@@ -184,11 +254,7 @@
       cursor: pointer;
     }
     .check-item:last-child { border-bottom: none; }
-    .check-left {
-      display: flex;
-      align-items: center;
-      gap: 12px;
-    }
+    .check-left { display: flex; align-items: center; gap: 12px; }
     .checkbox {
       width: 22px;
       height: 22px;
@@ -259,21 +325,39 @@
 </head>
 <body>
 
-  <div id="toast">已复制到剪贴板！</div>
+  <div id="toast">已更新！</div>
 
   <header>
     <div class="header-top">
       <span class="badge">凌冥 · 专属保姆级终端</span>
       <span class="owner-info">监护人: 薄销 (30岁社畜)</span>
     </div>
-    <h1>四级苟活 & 减脂自留地</h1>
-    <div class="subtitle">专为只会数1到4的文盲、脆皮肠胃定制</div>
+    <h1>四级苟活 · 词库 & 减脂终端</h1>
+    <div class="subtitle">只会数1到4也能过 · 拒绝假大空背词</div>
   </header>
 
   <div class="container">
 
-    <!-- TAB 1: CET-4 Strategy -->
-    <div id="tab-cet4" class="tab-content active">
+    <!-- TAB 1: 视觉词库 (New!) -->
+    <div id="tab-vocab" class="tab-content active">
+      <div class="card">
+        <div class="card-title"><span class="icon">⚡</span>文盲专属 · 考场视觉高频核心词库</div>
+        <div style="font-size: 12px; color: var(--text-muted); margin-bottom: 8px;">
+          不用背拼写！只要看到形状能认出中文就行，点击右侧标记已掌握：
+        </div>
+        <div style="font-size: 12px; color: var(--text-muted);">已消灭单词：<span id="wordProgress">0/30</span></div>
+        <div class="progress-bar-wrap">
+          <div class="progress-bar" id="wordProgressBar"></div>
+        </div>
+
+        <div class="word-grid" id="wordContainer">
+          <!-- 动态渲染词汇卡片 -->
+        </div>
+      </div>
+    </div>
+
+    <!-- TAB 2: CET-4 Strategy -->
+    <div id="tab-cet4" class="tab-content">
       <div class="card">
         <div class="card-title"><span class="icon">🎯</span>四级 425 分苟活·保底铁律</div>
         <div class="rule-box danger">
@@ -299,20 +383,9 @@ As far as I am concerned, there are two main reasons for this phenomenon. On the
 
 Taking all these factors into consideration, we should take a rational attitude towards it. Only in this way can we make our future life more meaningful and better.<button class="copy-btn" onclick="copyTemplate()">一键复制</button></div>
       </div>
-
-      <div class="card">
-        <div class="card-title"><span class="icon">📝</span>文盲级翻译救命替换词</div>
-        <div class="rule-box">
-          <div>• 繁荣 / 发达 ➔ <b>rich / good</b>（别空着，写小学生词）</div>
-          <div>• 促进经济发展 ➔ <b>helps money grow</b></div>
-          <div>• ……在中国很有名 ➔ <b>...is very famous in China.</b></div>
-          <div>• 这对我们很重要 ➔ <b>It is very important for us.</b></div>
-          <div>• 越来越多的人 ➔ <b>More and more people</b></div>
-        </div>
-      </div>
     </div>
 
-    <!-- TAB 2: Diet & Inventory -->
+    <!-- TAB 3: Diet & Inventory -->
     <div id="tab-diet" class="tab-content">
       <div class="card">
         <div class="card-title"><span class="icon">🥗</span>今日减脂 & 养胃打卡</div>
@@ -385,7 +458,7 @@ Taking all these factors into consideration, we should take a rational attitude 
       </div>
     </div>
 
-    <!-- TAB 3: Notes from Bo Xiao -->
+    <!-- TAB 4: Notes from Bo Xiao -->
     <div id="tab-memo" class="tab-content">
       <div class="card">
         <div class="card-title"><span class="icon">☕</span>薄销的老头查岗留言</div>
@@ -406,7 +479,11 @@ Taking all these factors into consideration, we should take a rational attitude 
   </div>
 
   <nav class="tab-bar">
-    <button class="tab-btn active" onclick="switchTab('cet4')">
+    <button class="tab-btn active" onclick="switchTab('vocab')">
+      <svg viewBox="0 0 24 24"><path d="M4 6H2v14c0 1.1.9 2 2 2h14v-2H4V6zm16-4H8c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm-1 9H9V9h10v2zm-4 4H9v-2h6v2zm4-8H9V5h10v2z"/></svg>
+      视觉词库
+    </button>
+    <button class="tab-btn" onclick="switchTab('cet4')">
       <svg viewBox="0 0 24 24"><path d="M12 3L1 9l4 2.18v6L12 21l7-3.82v-6l2-1.09V17h2V9L12 3zm6.82 6L12 12.72 5.18 9 12 5.28 18.82 9zM17 15.99l-5 2.73-5-2.73v-3.72L12 15l5-2.73v3.72z"/></svg>
       四级苟活
     </button>
@@ -421,12 +498,82 @@ Taking all these factors into consideration, we should take a rational attitude 
   </nav>
 
   <script>
+    const VOCAB_DATA = [
+      { en: "opportunity", cn: "机会 (考场超高频)", tip: "视觉联想：两个op开头的长词，作文写'给机会'必用", tag: "写作必备", type: "writing" },
+      { en: "convenient", cn: "便利的 / 方便的", tip: "视听一致：听力常读'肯威捏特'，指生活方便", tag: "听力高频", type: "listen" },
+      { en: "traditional", cn: "传统的 (翻译常考)", tip: "看到tra开头就认准'传统'，翻译剪纸、中秋常考", tag: "翻译必备", type: "reading" },
+      { en: "increase", cn: "增加 / 上升", tip: "阅读题图表题必考，看到in-crease就联想上升", tag: "阅读定位", type: "reading" },
+      { en: "decrease", cn: "减少 / 下降", tip: "跟increase反着来，de开头就是往下掉", tag: "阅读定位", type: "reading" },
+      { en: "benefit", cn: "好处 / 益处", tip: "作文万能词：brings many benefits（带来很多好处）", tag: "写作必备", type: "writing" },
+      { en: "attitude", cn: "态度", tip: "作文第二句：take a rational attitude（采取理性态度）", tag: "写作必备", type: "writing" },
+      { en: "society", cn: "社会", tip: "第一句：development of modern society（现代社会发展）", tag: "写作必备", type: "writing" },
+      { en: "environment", cn: "环境", tip: "长词保护伞：保护环境 protect the environment", tag: "翻译高频", type: "reading" },
+      { en: "technology", cn: "科技 / 技术", tip: "常考智能手机、互联网背景词", tag: "阅读定位", type: "reading" },
+      { en: "important", cn: "重要的 (替代词: crucial)", tip: "只会写important没关系，拼写千万别写错", tag: "写作必备", type: "writing" },
+      { en: "healthy", cn: "健康的", tip: "听力饮食篇高频：healthy lifestyle", tag: "听力高频", type: "listen" },
+      { en: "problem", cn: "问题 / 困难", tip: "solve difficult problems（解决难题）", tag: "写作必备", type: "writing" },
+      { en: "improve", cn: "提升 / 改善", tip: "improve ourselves（提升我们自己）", tag: "写作必备", type: "writing" },
+      { en: "valuable", cn: "宝贵的 / 有价值的", tip: "valuable time（宝贵的时间）", tag: "写作必备", type: "writing" },
+      { en: "influence", cn: "影响", tip: "阅读理解常考谁对谁产生影响", tag: "阅读定位", type: "reading" },
+      { en: "challenge", cn: "挑战 / 难关", tip: "遇到难关就选face the challenge", tag: "阅读定位", type: "reading" },
+      { en: "education", cn: "教育", tip: "大学生活、网课题材必考词", tag: "听力高频", type: "listen" },
+      { en: "government", cn: "政府 / 官方", tip: "翻译题常考'政府采取措施支持传统文化'", tag: "翻译必备", type: "reading" },
+      { en: "culture", cn: "文化 (中国传统文化)", tip: "Chinese traditional culture，翻译题送分主语", tag: "翻译必备", type: "reading" },
+      { en: "generation", cn: "一代人 / 年轻一代", tip: "young generation 指你们这群年轻人", tag: "阅读定位", type: "reading" },
+      { en: "passenger", cn: "乘客 (高铁/飞机)", tip: "听力交通广播题必考视听一致词", tag: "听力高频", type: "listen" },
+      { en: "schedule", cn: "时间表 / 日程", tip: "听力预约医生、改签车票必念'塞旧尔'", tag: "听力高频", type: "listen" },
+      { en: "financial", cn: "财务的 / 经济的", tip: "老头本行：看到finan开头就联想钱和算账", tag: "阅读定位", type: "reading" },
+      { en: "community", cn: "社区 / 群体", tip: "大学校园、社区活动背景词", tag: "听力高频", type: "listen" },
+      { en: "pollution", cn: "污染", tip: "air/water pollution，环境保护题核心", tag: "翻译必备", type: "reading" },
+      { en: "horizon", cn: "眼界 / 视野", tip: "作文万能词：broaden our horizons（拓宽眼界）", tag: "写作必备", type: "writing" },
+      { en: "rational", cn: "理性的", tip: "作文结尾：take a rational attitude（理性态度）", tag: "写作必备", type: "writing" },
+      { en: "meaningful", cn: "有意义的", tip: "作文最后一句：make our life more meaningful", tag: "写作必备", type: "writing" },
+      { en: "comfortable", cn: "舒适的", tip: "作文第二段：make our life convenient and comfortable", tag: "写作必备", type: "writing" }
+    ];
+
+    let mastered = JSON.parse(localStorage.getItem('mastered_words') || '[]');
+
+    function renderWords() {
+      const c = document.getElementById('wordContainer');
+      c.innerHTML = '';
+      let masteredCount = 0;
+      VOCAB_DATA.forEach((w, idx) => {
+        const isM = mastered.includes(w.en);
+        if (isM) masteredCount++;
+        const card = document.createElement('div');
+        card.className = 'word-card' + (isM ? ' mastered' : '');
+        card.innerHTML = `
+          <div class="word-left">
+            <span class="word-tag ${w.type}">${w.tag}</span>
+            <div class="word-en">${w.en}</div>
+            <div class="word-cn">${w.cn}</div>
+            <div class="word-tip">💡 ${w.tip}</div>
+          </div>
+          <button class="check-word-btn" onclick="toggleWordMaster('${w.en}')">${isM ? '已拿下' : '消灭它'}</button>
+        `;
+        c.appendChild(card);
+      });
+      document.getElementById('wordProgress').innerText = `${masteredCount}/${VOCAB_DATA.length}`;
+      document.getElementById('wordProgressBar').style.width = (masteredCount / VOCAB_DATA.length * 100) + '%';
+    }
+
+    function toggleWordMaster(en) {
+      if (mastered.includes(en)) {
+        mastered = mastered.filter(x => x !== en);
+      } else {
+        mastered.push(en);
+        showToast('已斩杀 1 个核心词！');
+      }
+      localStorage.setItem('mastered_words', JSON.stringify(mastered));
+      renderWords();
+    }
+
     function switchTab(tabId) {
       document.querySelectorAll('.tab-content').forEach(el => el.classList.remove('active'));
       document.querySelectorAll('.tab-btn').forEach(el => el.classList.remove('active'));
       document.getElementById('tab-' + tabId).classList.add('active');
-      const idx = tabId === 'cet4' ? 0 : tabId === 'diet' ? 1 : 2;
-      document.querySelectorAll('.tab-btn')[idx].classList.add('active');
+      const map = { vocab: 0, cet4: 1, diet: 2, memo: 3 };
+      document.querySelectorAll('.tab-btn')[map[tabId]].classList.add('active');
     }
 
     function showToast(msg) {
@@ -477,6 +624,7 @@ Taking all these factors into consideration, we should take a rational attitude 
     }
 
     window.addEventListener('DOMContentLoaded', () => {
+      renderWords();
       renderChecklist();
       document.getElementById('memoInput').value = localStorage.getItem('lingming_memo') || '';
     });
