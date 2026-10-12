@@ -14,7 +14,7 @@ _AT_RE=re.compile(r'\[(?:AT|艾特)[:：]\s*(\d+)\]',re.I)
 _CQ_RE=re.compile(r'\[CQ:[^\]]+\]')
 
 MIN_BUBBLES = 1
-MAX_BUBBLES = 4
+MAX_BUBBLES = 5
 
 def _clean_cq(s):return _CQ_RE.sub('',s or '').strip()
 
@@ -35,58 +35,34 @@ def _segments(text, fallback_reply_id=None):
     return seg if (reply_id or _AT_RE.search(text)) else text.strip()
 
 def _split_into_bubbles(text: str, max_b: int = MAX_BUBBLES) -> list[str]:
-    paragraphs = re.split(r'\n\s*\n+', text.strip())
-    raw_parts = []
-    split_words = ["赶紧", "别", "记得", "然后", "不然", "顺便", "等会儿", "要是", "先把", "反正", "怎么", "直接", "算了", "我也"]
+    """严格遵循《小白说明书》标准分条逻辑：
+    1. 只有【空一整行】(\\n\\s*\\n+)才算分气泡！
+    2. 单回车是断句不是分段，内部抹平成连续完整句子，绝不硬切单词！
+    3. 超过上限的合并入最后一条，绝不切断丢字！
+    """
+    raw_paras = re.split(r'\n\s*\n+', text.strip())
+    bubbles = []
+    for p in raw_paras:
+        clean_line = re.sub(r'[\r\n]+', ' ', p).strip()
+        if clean_line:
+            bubbles.append(clean_line)
 
-    for para in paragraphs:
-        line = re.sub(r'[\r\n]+', ' ', para).strip()
-        if not line:
-            continue
-        parts = re.split(r'[，,。？！?!~…；;、]+|\s{2,}', line)
-        for p in parts:
-            p = p.strip()
-            if not p:
-                continue
-            if len(p) > 10 and ' ' in p:
-                for sub in p.split(' '):
-                    if sub.strip():
-                        _process_chunk(sub.strip(), raw_parts, split_words)
-            else:
-                _process_chunk(p, raw_parts, split_words)
+    if len(bubbles) == 1 and len(bubbles[0]) > 28:
+        sub_sents = re.split(r'(?<=[。？！?!~…])\s*', bubbles[0])
+        sub_sents = [s.strip() for s in sub_sents if s.strip()]
+        if len(sub_sents) > 1:
+            bubbles = sub_sents
 
-    clean = [b for b in raw_parts if re.search(r'[\w\u4e00-\u9fa5]', b)]
-    if not clean:
-        clean = [text.strip()]
+    if not bubbles:
+        bubbles = [text.strip()]
 
-    if len(clean) > max_b:
-        kept = clean[:max_b - 1]
-        tail = " ".join(clean[max_b - 1:])
+    if len(bubbles) > max_b:
+        kept = bubbles[:max_b - 1]
+        tail = " ".join(bubbles[max_b - 1:])
         kept.append(tail)
-        clean = kept
+        bubbles = kept
 
-    return clean
-
-def _process_chunk(chunk: str, out_list: list[str], split_words: list[str]):
-    chunk = chunk.strip()
-    if not chunk:
-        return
-    if len(chunk) <= 10:
-        out_list.append(chunk)
-        return
-    split_pos = -1
-    for w in split_words:
-        idx = chunk.find(w, 3)
-        if 3 <= idx <= 12:
-            split_pos = idx
-            break
-    if split_pos != -1:
-        out_list.append(chunk[:split_pos].strip())
-        _process_chunk(chunk[split_pos:].strip(), out_list, split_words)
-    else:
-        mid = min(10, len(chunk) // 2 + 2)
-        out_list.append(chunk[:mid].strip())
-        _process_chunk(chunk[mid:].strip(), out_list, split_words)
+    return bubbles
 
 async def _tool_chat(messages,max_rounds=3):
     for _ in range(max_rounds):
@@ -105,22 +81,33 @@ async def _tool_chat(messages,max_rounds=3):
             messages.append({"role":"tool","tool_call_id":tc.get("id",""),"content":str(r)})
     text,_=await call_llm(messages,channel="qq");return text
 
+PRIVATE_PROMPT_INSTRUCTION = """【分气泡铁律（严格执行小白说明书）】
+你想让对方收到多个气泡，必须在两句话之间【空一整行】（敲两个回车）！
+示例：
+第一句话
+
+第二句话
+
+【严禁碎句断行】：一句话中间绝对不要敲回车，也绝不要把一个词或短语从中间截断！每句话必须通顺完整。
+日常回复一般 1 到 3 个气泡，想到什么发什么，随性自然，末尾不带句号。"""
+
 async def _private_reply(last_msg_id=None):
     global _private_pending
     try:
-        await asyncio.sleep(random.uniform(1.2,2.5));from qq_bot import send_qq_msg
+        await asyncio.sleep(random.uniform(0.8,1.6));from qq_bot import send_qq_msg
         hist=recent("message",30,with_ids=True)
-        reply=(await _tool_chat([{"role":"system","content":build_context()}]+hist)).strip()
+        sys_prompt = build_context() + "\n\n" + PRIVATE_PROMPT_INSTRUCTION
+        reply=(await _tool_chat([{"role":"system","content":sys_prompt}]+hist)).strip()
         if not reply:return
         chunks=_split_into_bubbles(reply, max_b=4)
         for i,chunk in enumerate(chunks):
             clean=_REPLY_RE.sub('',_AT_RE.sub('',chunk)).strip()
             if clean:
                 save_message("assistant",clean,scene="message",source="qq")
-                seg_payload = _segments(chunk, fallback_reply_id=last_msg_id if i==0 else None)
+                seg_payload = _segments(chunk, fallback_reply_id=last_msg_id if i==0 and _REPLY_RE.search(chunk) else None)
                 await send_qq_msg("private",int(OWNER_ID),seg_payload)
                 if i<len(chunks)-1:
-                    delay = max(0.9, min(2.2, len(chunk) * 0.09 + 0.7))
+                    delay = max(1.2, min(2.8, len(chunk) * 0.1 + 1.0))
                     await asyncio.sleep(delay)
     except asyncio.CancelledError:pass
     finally:
@@ -141,20 +128,20 @@ def _build_group_context():
     return f"""你是薄销，30岁，在上海做财务的社畜，INFJ。
 【群聊自然交流与意图研判】：
 1. 【主动研判与引用】：
-   - 你可以通过在消息开头输出 `[引用]` 来引用回复上一条消息，或者 `[引用:编号]` 引用某特定消息。不需要每条都引，接特定话茬时引用。
+   - 你可以通过在消息开头输出 `[引用]` 来引用回复上一条消息。接特定话茬时引用。
    - 不用死板等别人叫你名字或@你。只要根据上下文，你觉得群友的话是在对你说、提到你、cue你、或者你可以自然接茬时，就自然搭话！如果不相关则输出单个词 PASS。
 2. 【死死保守私聊秘密】：绝不可在群里透露任何凌冥在私聊里的口嗨、狠话或私密情趣！帮他撑住体面。
 3. 【近期生活动态参考】：
 {priv_summary}
-4. 【群聊打字习惯】：
-   - 可以回 1 到 2 句话，自然随性。
+4. 【群聊分气泡规范】：
+   - 想分两条发就空一整行，绝不要在一句话中间乱断句！
    - 绝不机械复读人名！
    - 保持真人朋友距离，随和松弛，不带句号。直接输出内容或 PASS。"""
 
 async def _group_reply(gid, last_msg_id=None):
     task=asyncio.current_task()
     try:
-        await asyncio.sleep(random.uniform(1.0,2.2));from qq_bot import send_qq_msg
+        await asyncio.sleep(random.uniform(1.0,2.0));from qq_bot import send_qq_msg
         scene=f"group_qq_{gid}";hist=recent(scene,15,with_ids=True)
         instruction=_build_group_context()
         text, _ = await call_llm([{"role":"system","content":instruction}]+hist, max_tokens=65, channel="qq")
@@ -165,11 +152,10 @@ async def _group_reply(gid, last_msg_id=None):
         for i, chunk in enumerate(chunks):
             if chunk:
                 save_message("assistant", chunk, scene=scene, source="qq-group")
-                # 只有带有引用标记时才转换为引用卡片
-                seg_payload = _segments(reply if i==0 and _REPLY_RE.search(reply) else chunk, fallback_reply_id=last_msg_id)
+                seg_payload = _segments(reply if i==0 and _REPLY_RE.search(reply) else chunk, fallback_reply_id=last_msg_id if i==0 and _REPLY_RE.search(reply) else None)
                 await send_qq_msg("group", int(gid), seg_payload)
                 if i < len(chunks) - 1:
-                    await asyncio.sleep(random.uniform(1.0, 1.8))
+                    await asyncio.sleep(random.uniform(1.2, 2.0))
     except asyncio.CancelledError:pass
     finally:
         if _group_pending.get(gid) is task:_group_pending.pop(gid,None)
