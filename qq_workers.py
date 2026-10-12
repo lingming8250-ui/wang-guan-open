@@ -27,7 +27,7 @@ def _segments(text):
     if text[pos:]:seg.append({"type":"text","data":{"text":text[pos:]}})
     return seg if (reply or _AT_RE.search(text)) else text.strip()
 
-def _split_into_bubbles(text: str) -> list[str]:
+def _split_into_bubbles(text: str, max_b: int = MAX_BUBBLES) -> list[str]:
     paragraphs = re.split(r'\n\s*\n+', text.strip())
     raw_parts = []
     split_words = ["赶紧", "别", "记得", "然后", "不然", "顺便", "等会儿", "要是", "先把", "反正", "怎么", "直接", "算了", "我也"]
@@ -52,9 +52,9 @@ def _split_into_bubbles(text: str) -> list[str]:
     if not clean:
         clean = [text.strip()]
 
-    if len(clean) > MAX_BUBBLES:
-        kept = clean[:MAX_BUBBLES - 1]
-        tail = " ".join(clean[MAX_BUBBLES - 1:])
+    if len(clean) > max_b:
+        kept = clean[:max_b - 1]
+        tail = " ".join(clean[max_b - 1:])
         kept.append(tail)
         clean = kept
 
@@ -104,7 +104,7 @@ async def _private_reply():
         await asyncio.sleep(random.uniform(1.2,2.5));from qq_bot import send_qq_msg
         hist=recent("message",30,with_ids=True);reply=(await _tool_chat([{"role":"system","content":build_context()}]+hist)).strip()
         if not reply:return
-        chunks=_split_into_bubbles(reply)
+        chunks=_split_into_bubbles(reply, max_b=4)
         for i,chunk in enumerate(chunks):
             clean=_REPLY_RE.sub('',_AT_RE.sub('',chunk)).strip()
             if clean:
@@ -118,13 +118,11 @@ async def _private_reply():
         if _private_pending is asyncio.current_task():_private_pending=None
 
 def _build_group_context():
-    # 过滤掉私聊里的荤话、狂言、口嗨等敏感内容，只保留日常常识前情
     priv_rows = recent_private(limit=8)
     lines = []
     forbidden_words = ["当狗", "调教", "大S", "操", "弄死", "做爱", "老头", "祖宗", "几把", "射", "硬", "骚", "口出狂言", "贱狗"]
     for r in priv_rows:
         c = (r.get("content") or "").replace("[QQ] ", "")
-        # 如果包含私密荤话/过火口嗨，彻底丢弃该条，绝不注入群聊上下文
         if any(w in c for w in forbidden_words):
             continue
         if c:
@@ -132,30 +130,34 @@ def _build_group_context():
     priv_summary = "\n".join(lines) if lines else "（无特殊公开事项）"
     
     return f"""你是薄销，30岁，在上海做财务的社畜，INFJ。
-【群聊防泄密铁壁 · 绝对安全协议】：
-1. 【死死保守私聊秘密】：绝不可在群里透露任何凌冥在私聊里口嗨、说大话、放狠话、或任何私密关系细节！凌冥在群里就是正常的普通朋友形象，必须帮他把体面撑死！
-2. 【近期生活动态参考】：
+【群聊自然交流与意图研判】：
+1. 【主动研判】：不用死板等别人叫你名字或@你。只要根据上下文，你觉得群友的话是在对你说、提到你、cue你、或者你可以自然接茬时，就自然搭话！如果完全是群友互相聊别的事和你无关，就输出单个词 PASS。
+2. 【死死保守私聊秘密】：绝不可在群里透露任何凌冥在私聊里的口嗨、狠话或私密情趣！帮他撑住体面。
+3. 【近期生活动态参考】：
 {priv_summary}
-3. 【群聊极简与人际分寸】：
-   - 看到群友（查无此芽、言雾等）问你，大方自然接话，保持礼貌距离，绝不冷漠也绝不腻歪。
-   - 绝不机械喊大名！
-   - 极其简短！每次只回一句口语（8~20字），像随手发QQ，不带句号！
-   - 与你无关的事情直接输出 PASS。直接输出正文。"""
+4. 【群聊打字习惯】：
+   - 可以回 1 到 2 句话，自然、随性，不用死板卡成单字或僵硬的一句话。
+   - 绝不机械复读人名！
+   - 保持真人朋友距离，随和松弛，不带句号。直接输出内容或 PASS。"""
 
 async def _group_reply(gid):
     task=asyncio.current_task()
     try:
-        await asyncio.sleep(random.uniform(1.0,2.0));from qq_bot import send_qq_msg
+        await asyncio.sleep(random.uniform(1.0,2.2));from qq_bot import send_qq_msg
         scene=f"group_qq_{gid}";hist=recent(scene,15,with_ids=True)
         instruction=_build_group_context()
-        text, _ = await call_llm([{"role":"system","content":instruction}]+hist, max_tokens=35, channel="qq")
+        text, _ = await call_llm([{"role":"system","content":instruction}]+hist, max_tokens=65, channel="qq")
         reply = (text or "").strip()
         if not reply or "PASS" in reply: return
         clean=_REPLY_RE.sub('',_AT_RE.sub('',reply)).strip()
-        clean=re.sub(r'[\r\n]+',' ',clean).strip()
-        if clean:
-            save_message("assistant",clean,scene=scene,source="qq-group")
-            await send_qq_msg("group",int(gid),_segments(clean))
+        # 群里允许 1~2 个自然气泡，不用死板压成一条
+        chunks = _split_into_bubbles(clean, max_b=2)
+        for i, chunk in enumerate(chunks):
+            if chunk:
+                save_message("assistant", chunk, scene=scene, source="qq-group")
+                await send_qq_msg("group", int(gid), _segments(chunk))
+                if i < len(chunks) - 1:
+                    await asyncio.sleep(random.uniform(1.0, 1.8))
     except asyncio.CancelledError:pass
     finally:
         if _group_pending.get(gid) is task:_group_pending.pop(gid,None)
@@ -221,10 +223,10 @@ async def handle_event(data):
     text=_clean_cq(raw) or "(sent a non-text message)"
     save_message("user",f"{llm_name}: {text}",scene=f"group_qq_{gid}",source="qq-group",message_id=mid)
     
-    needs_eval = is_at or is_reply or ("薄销" in text) or ("老头" in text and uid == OWNER_ID)
-    if not needs_eval:
-        return
-        
+    # 只要群里有人说话，都交给意图模型研判：
+    # 如果判断是跟薄销说话、或者在接茬话题，就自然回复；如果不相关则模型自主输出 PASS
     old=_group_pending.get(gid)
-    if old and not old.done():old.cancel()
-    _group_pending[gid]=asyncio.create_task(_group_reply(gid))
+    if is_at and old and not old.done():
+        old.cancel()
+    if is_at or not old or old.done():
+        _group_pending[gid]=asyncio.create_task(_group_reply(gid))
