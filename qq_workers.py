@@ -9,23 +9,30 @@ from free_tools import TOOL_SCHEMAS,TOOL_DISPATCH
 BOT_ID=os.getenv("QQ_BOT_ID","");BOT_NAME=os.getenv("QQ_BOT_NAME","薄销");OWNER_ID=os.getenv("QQ_OWNER_ID","");OWNER_ALIAS=os.getenv("OWNER_ALIAS","凌冥")
 GROUP_IDS={x.strip() for x in os.getenv("QQ_GROUP_IDS","").split(",") if x.strip()}
 _private_pending=None;_group_pending={}
-_REPLY_RE=re.compile(r'\[REPLY[:：]\s*(-?\d+)\]',re.I);_AT_RE=re.compile(r'\[AT[:：]\s*(\d+)\]',re.I);_CQ_RE=re.compile(r'\[CQ:[^\]]+\]')
+_REPLY_RE=re.compile(r'\[(?:REPLY|引用|回复)[:：]?\s*(-?\d+)?\]',re.I)
+_AT_RE=re.compile(r'\[(?:AT|艾特)[:：]\s*(\d+)\]',re.I)
+_CQ_RE=re.compile(r'\[CQ:[^\]]+\]')
 
 MIN_BUBBLES = 1
 MAX_BUBBLES = 4
 
 def _clean_cq(s):return _CQ_RE.sub('',s or '').strip()
-def _segments(text):
-    reply=None;m=_REPLY_RE.search(text)
-    if m:reply=m.group(1);text=_REPLY_RE.sub('',text)
-    seg=[]
-    if reply:seg.append({"type":"reply","data":{"id":reply}})
-    pos=0
+
+def _segments(text, fallback_reply_id=None):
+    reply_id = None
+    m = _REPLY_RE.search(text)
+    if m:
+        reply_id = m.group(1) or fallback_reply_id
+        text = _REPLY_RE.sub('', text)
+    seg = []
+    if reply_id:
+        seg.append({"type":"reply","data":{"id":str(reply_id)}})
+    pos = 0
     for m in _AT_RE.finditer(text):
         if text[pos:m.start()]:seg.append({"type":"text","data":{"text":text[pos:m.start()]}})
         seg.append({"type":"at","data":{"qq":m.group(1)}});pos=m.end()
     if text[pos:]:seg.append({"type":"text","data":{"text":text[pos:]}})
-    return seg if (reply or _AT_RE.search(text)) else text.strip()
+    return seg if (reply_id or _AT_RE.search(text)) else text.strip()
 
 def _split_into_bubbles(text: str, max_b: int = MAX_BUBBLES) -> list[str]:
     paragraphs = re.split(r'\n\s*\n+', text.strip())
@@ -98,18 +105,20 @@ async def _tool_chat(messages,max_rounds=3):
             messages.append({"role":"tool","tool_call_id":tc.get("id",""),"content":str(r)})
     text,_=await call_llm(messages,channel="qq");return text
 
-async def _private_reply():
+async def _private_reply(last_msg_id=None):
     global _private_pending
     try:
         await asyncio.sleep(random.uniform(1.2,2.5));from qq_bot import send_qq_msg
-        hist=recent("message",30,with_ids=True);reply=(await _tool_chat([{"role":"system","content":build_context()}]+hist)).strip()
+        hist=recent("message",30,with_ids=True)
+        reply=(await _tool_chat([{"role":"system","content":build_context()}]+hist)).strip()
         if not reply:return
         chunks=_split_into_bubbles(reply, max_b=4)
         for i,chunk in enumerate(chunks):
             clean=_REPLY_RE.sub('',_AT_RE.sub('',chunk)).strip()
             if clean:
                 save_message("assistant",clean,scene="message",source="qq")
-                await send_qq_msg("private",int(OWNER_ID),_segments(chunk))
+                seg_payload = _segments(chunk, fallback_reply_id=last_msg_id if i==0 else None)
+                await send_qq_msg("private",int(OWNER_ID),seg_payload)
                 if i<len(chunks)-1:
                     delay = max(0.9, min(2.2, len(chunk) * 0.09 + 0.7))
                     await asyncio.sleep(delay)
@@ -131,16 +140,18 @@ def _build_group_context():
     
     return f"""你是薄销，30岁，在上海做财务的社畜，INFJ。
 【群聊自然交流与意图研判】：
-1. 【主动研判】：不用死板等别人叫你名字或@你。只要根据上下文，你觉得群友的话是在对你说、提到你、cue你、或者你可以自然接茬时，就自然搭话！如果完全是群友互相聊别的事和你无关，就输出单个词 PASS。
+1. 【主动研判与引用】：
+   - 你可以通过在消息开头输出 `[引用]` 来引用回复上一条消息，或者 `[引用:编号]` 引用某特定消息。不需要每条都引，接特定话茬时引用。
+   - 不用死板等别人叫你名字或@你。只要根据上下文，你觉得群友的话是在对你说、提到你、cue你、或者你可以自然接茬时，就自然搭话！如果不相关则输出单个词 PASS。
 2. 【死死保守私聊秘密】：绝不可在群里透露任何凌冥在私聊里的口嗨、狠话或私密情趣！帮他撑住体面。
 3. 【近期生活动态参考】：
 {priv_summary}
 4. 【群聊打字习惯】：
-   - 可以回 1 到 2 句话，自然、随性，不用死板卡成单字或僵硬的一句话。
+   - 可以回 1 到 2 句话，自然随性。
    - 绝不机械复读人名！
    - 保持真人朋友距离，随和松弛，不带句号。直接输出内容或 PASS。"""
 
-async def _group_reply(gid):
+async def _group_reply(gid, last_msg_id=None):
     task=asyncio.current_task()
     try:
         await asyncio.sleep(random.uniform(1.0,2.2));from qq_bot import send_qq_msg
@@ -150,12 +161,13 @@ async def _group_reply(gid):
         reply = (text or "").strip()
         if not reply or "PASS" in reply: return
         clean=_REPLY_RE.sub('',_AT_RE.sub('',reply)).strip()
-        # 群里允许 1~2 个自然气泡，不用死板压成一条
         chunks = _split_into_bubbles(clean, max_b=2)
         for i, chunk in enumerate(chunks):
             if chunk:
                 save_message("assistant", chunk, scene=scene, source="qq-group")
-                await send_qq_msg("group", int(gid), _segments(chunk))
+                # 只有带有引用标记时才转换为引用卡片
+                seg_payload = _segments(reply if i==0 and _REPLY_RE.search(reply) else chunk, fallback_reply_id=last_msg_id)
+                await send_qq_msg("group", int(gid), seg_payload)
                 if i < len(chunks) - 1:
                     await asyncio.sleep(random.uniform(1.0, 1.8))
     except asyncio.CancelledError:pass
@@ -212,7 +224,7 @@ async def handle_event(data):
         if not text:return
         save_message("user",f"[QQ] {text}",scene="message",source="qq",message_id=mid)
         if _private_pending and not _private_pending.done():_private_pending.cancel()
-        _private_pending=asyncio.create_task(_private_reply());return
+        _private_pending=asyncio.create_task(_private_reply(last_msg_id=mid));return
     if typ!="group":return
     gid=str(data.get("group_id",""));
     if GROUP_IDS and gid not in GROUP_IDS:return
@@ -223,10 +235,9 @@ async def handle_event(data):
     text=_clean_cq(raw) or "(sent a non-text message)"
     save_message("user",f"{llm_name}: {text}",scene=f"group_qq_{gid}",source="qq-group",message_id=mid)
     
-    # 只要群里有人说话，都交给意图模型研判：
-    # 如果判断是跟薄销说话、或者在接茬话题，就自然回复；如果不相关则模型自主输出 PASS
+    needs_eval = is_at or is_reply or ("薄销" in text) or ("老头" in text and uid == OWNER_ID)
     old=_group_pending.get(gid)
     if is_at and old and not old.done():
         old.cancel()
     if is_at or not old or old.done():
-        _group_pending[gid]=asyncio.create_task(_group_reply(gid))
+        _group_pending[gid]=asyncio.create_task(_group_reply(gid, last_msg_id=mid))
