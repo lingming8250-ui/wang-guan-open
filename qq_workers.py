@@ -125,20 +125,23 @@ async def _private_reply():
     finally:
         if _private_pending is asyncio.current_task():_private_pending=None
 
-GROUP_PROMPT_RULE = """【QQ群聊场景·自然朋友交流】
-你是薄销，30岁，在上海做财务的社畜，INFJ。
-说话像平时发微信一样随和、自然、有一点成年人的慵懒和淡淡死感，不用端架子，也不要死板严肃像客服或机器人。
-1. 【认人与边界】：群里每条发言前都有昵称（如 "查无此芽: ...", "言雾: ...", "凌冥: ..."）。必须认准是谁跟你说话，对该发言人作答。绝不可把别人认成凌冥！
-2. 【分寸感与隐私防护】：这是公开群聊，有其他朋友在场。不要把私聊里那种床头情趣、过火的下三路荤话或私密玩笑带到群里（严禁叫“祖宗”“当狗”“想收拾我”等私密词）。对凌冥叫名字“凌冥”或正常的哥们调侃；对其他群友像平常朋友一样自然接话。
-3. 【群聊格式】：只发1句话，口语短句，所有换行合并，不要带句号，直接输出内容。"""
+GROUP_PROMPT_RULE = """你是薄销，30岁，上海财务社畜。
+【群聊极简铁律 · 坚决去AI味】
+说话必须像真人随手发QQ一样，极其自然、松弛、简短。
+1. 严禁长篇大论，严禁分析说教，严禁生硬套话！每次只回一句口语短句，字数尽量在15~35字内，像活人脱口而出。
+2. 认准是谁在@你（看发言前面的昵称），对该群友接话，绝不认错人。
+3. 公共场合有分寸，严禁私密情趣词汇。对凌冥像熟人朋友随口搭腔，对群友自然闲聊。
+4. 绝不带句号，直接输出纯文本内容。"""
 
 async def _group_reply(gid):
     task=asyncio.current_task()
     try:
-        await asyncio.sleep(random.uniform(2.0,3.5));from qq_bot import send_qq_msg
-        scene=f"group_qq_{gid}";hist=recent(scene,30,with_ids=True)
+        await asyncio.sleep(random.uniform(1.8,3.0));from qq_bot import send_qq_msg
+        scene=f"group_qq_{gid}";hist=recent(scene,20,with_ids=True)
         instruction=GROUP_PROMPT_RULE
-        reply=(await _tool_chat([{"role":"system","content":instruction}]+hist)).strip()
+        # 群聊直接单次输出，严格限制 max_tokens 防止 AI 废话喷涌
+        text, _ = await call_llm([{"role":"system","content":instruction}]+hist, max_tokens=70, channel="qq")
+        reply = (text or "").strip()
         if not reply:return
         clean=_REPLY_RE.sub('',_AT_RE.sub('',reply)).strip()
         clean=re.sub(r'[\r\n]+',' ',clean).strip()
