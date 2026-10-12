@@ -37,3 +37,28 @@ async def trigger_summary(request):
 async def trigger_compress(request):
     if not auth_ok(request):return JSONResponse({"error":"unauthorized"},401)
     await asyncio.to_thread(run_platform_batch_compress);return JSONResponse({"ok":True})
+
+async def trigger_qq_test(request):
+    if not auth_ok(request):return JSONResponse({"error":"unauthorized"},401)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    msg = (body.get("message") or "祖宗 收到没 老头在后台给你打了个卡").strip()
+    from qq_bot import send_qq_msg, _conn
+    from conversation_store import save_message
+    from qq_workers import _split_into_bubbles, _segments
+    target = os.getenv("QQ_OWNER_ID","")
+    if not target:
+        return JSONResponse({"error":"no QQ_OWNER_ID"}, 400)
+    if _conn is None:
+        return JSONResponse({"error":"QQ websocket not connected"}, 503)
+    chunks = _split_into_bubbles(msg)
+    sent_res = []
+    for chunk in chunks:
+        if chunk:
+            save_message("assistant", chunk, scene="message", source="qq-test")
+            res = await send_qq_msg("private", int(target), _segments(chunk))
+            sent_res.append(res)
+            await asyncio.sleep(1.2)
+    return JSONResponse({"ok": True, "results": sent_res})
