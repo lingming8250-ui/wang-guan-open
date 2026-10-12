@@ -28,7 +28,6 @@ def _segments(text):
     return seg if (reply or _AT_RE.search(text)) else text.strip()
 
 def _split_into_bubbles(text: str) -> list[str]:
-    # 严格遵循《真人在打字不是人机》：单条极短（10字左右），想到什么发什么
     paragraphs = re.split(r'\n\s*\n+', text.strip())
     raw_parts = []
     split_words = ["赶紧", "别", "记得", "然后", "不然", "顺便", "等会儿", "要是", "先把", "反正", "怎么", "直接", "算了", "我也"]
@@ -53,7 +52,6 @@ def _split_into_bubbles(text: str) -> list[str]:
     if not clean:
         clean = [text.strip()]
 
-    # 最多 5 条，超出的并入末尾
     if len(clean) > MAX_BUBBLES:
         kept = clean[:MAX_BUBBLES - 1]
         tail = " ".join(clean[MAX_BUBBLES - 1:])
@@ -120,21 +118,26 @@ async def _private_reply():
         if _private_pending is asyncio.current_task():_private_pending=None
 
 GROUP_PROMPT_RULE = """你是薄销，30岁，上海财务社畜。
-【真实人类打字习惯 · 严禁AI味】
-1. 【禁止句句喊名字】：真人聊天绝不会句句带人名！严禁动不动喊“凌冥你放心”“别害羞了凌冥”，像死板机器人！正常人说话直接接话，不带名字，只有极少数场合才随口带一句。
-2. 【单条极短】：每次只说一句话，最多10到15个字！能用两三个字说完的绝不多嘴（如“在呢”“能看”“确实”“？”）。
-3. 【松弛随性】：语序松散，倒装，想到什么说什么，不求周全，不要客套。
-4. 【不带句号】：打字随手发，末尾坚决不带句号。直接输出纯文本。"""
+【群聊判断与意图判定】：
+1. 你的名字叫“薄销”，群友提到你或者@你时，你要看清上下文意图：
+   - 如果对方是在问你、叫你、跟你对话（如“薄销在干嘛”“薄销来算个账”），你接话；
+   - 如果只是在陈述、调侃别人或者提了嘴名字但并不需要你回答（如“薄销上班去了”“薄销肯定在加班”），或者话题与你无关，输出 PASS，绝对不要接话！
+2. 【对其他人的社交距离】：保持礼貌距离感和成年人的冷淡分寸。不要跟其他人热络调情，不要跟其他人打情骂俏，话少、淡淡的。
+3. 【真人极简打字】：
+   - 严禁机械叫名字！不许动不动把对方名字挂在嘴边。
+   - 极短！最多10到15个字，能回两三个字的绝不多回。
+   - 绝不带句号。
+   - 如果决定不说话，直接输出单个单词 PASS。"""
 
-async def _group_reply(gid, force=False):
+async def _group_reply(gid):
     task=asyncio.current_task()
     try:
-        await asyncio.sleep(random.uniform(1.2,2.5));from qq_bot import send_qq_msg
+        await asyncio.sleep(random.uniform(1.2,2.3));from qq_bot import send_qq_msg
         scene=f"group_qq_{gid}";hist=recent(scene,15,with_ids=True)
-        instruction=GROUP_PROMPT_RULE + ("\n有人直接@你了，回一句短的。" if force else "\n你也可以顺着群聊随口搭半句，不想说就输出 PASS。")
-        text, _ = await call_llm([{"role":"system","content":instruction}]+hist, max_tokens=40, channel="qq")
+        instruction=GROUP_PROMPT_RULE
+        text, _ = await call_llm([{"role":"system","content":instruction}]+hist, max_tokens=35, channel="qq")
         reply = (text or "").strip()
-        if not reply or (not force and "PASS" in reply): return
+        if not reply or "PASS" in reply: return
         clean=_REPLY_RE.sub('',_AT_RE.sub('',reply)).strip()
         clean=re.sub(r'[\r\n]+',' ',clean).strip()
         if clean:
@@ -204,11 +207,14 @@ async def handle_event(data):
     text=_clean_cq(raw) or "(sent a non-text message)"
     save_message("user",f"{llm_name}: {text}",scene=f"group_qq_{gid}",source="qq-group",message_id=mid)
     
-    # 只要被@，必须回；没被@时大概率闭麦潜水，小概率由模型自主PASS
+    # 判断是否可能需要触发：
+    # 1. 显式 @ 了薄销
+    # 2. 文本中出现了薄销的名字（如“薄销在干嘛”）
+    # 3. 正在被私聊/特定会话直接带出
+    needs_eval = is_at or ("薄销" in text) or ("老头" in text and uid == OWNER_ID)
+    if not needs_eval:
+        return
+        
     old=_group_pending.get(gid)
-    if is_at and old and not old.done():old.cancel()
-    if is_at:
-        _group_pending[gid]=asyncio.create_task(_group_reply(gid, force=True))
-    elif random.random() < 0.2:  # 偶尔极低概率允许顺嘴搭半句，其他时候死死闭麦
-        if not old or old.done():
-            _group_pending[gid]=asyncio.create_task(_group_reply(gid, force=False))
+    if old and not old.done():old.cancel()
+    _group_pending[gid]=asyncio.create_task(_group_reply(gid))
