@@ -5,6 +5,22 @@ from llm_channels import get_config, record_result, clear_cache
 
 log=logging.getLogger(__name__)
 
+ERROR_PATTERNS = [
+    r"The prompt could not be submitted",
+    r"violate Google",
+    r"Prohibited Use policy",
+    r"sensitive words",
+    r"safety policy",
+    r"content management policy",
+    r"Upstream error",
+    r"Rate limit reached",
+]
+
+def _is_upstream_safety_error(text: str) -> bool:
+    for pat in ERROR_PATTERNS:
+        if re.search(pat, text, re.I):
+            return True
+    return False
 
 def _safe_headers(api_key:str, extra_headers:dict|None=None) -> dict:
     custom={str(k):str(v) for k,v in (extra_headers or {}).items()}
@@ -63,6 +79,12 @@ async def call_llm(messages:list,max_tokens:int=4096,tools:list|None=None,extra_
         raise
     if not got_done:log.warning("LLM stream ended without [DONE] channel=%s",channel)
     full_text = "".join(content).strip()
+    
+    # 检测是否撞上了 Google 等上游的安全风控报错
+    if _is_upstream_safety_error(full_text):
+        log.warning("Intercepted upstream safety policy error text: %s", full_text[:120])
+        return "刚卡了一下", []
+
     # 清洗可能泄漏的思考标签及伪 CoT 分析
     full_text = re.sub(r'<think>.*?</think>', '', full_text, flags=re.S)
     full_text = re.sub(r'(?:分析[^\n]*[:：]|情绪[^\n]*[:：]|-薄销的人设[^\n]*[:：]).*?(?=\n\n|\Z)', '', full_text, flags=re.S).strip()
