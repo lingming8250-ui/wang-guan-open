@@ -11,8 +11,8 @@ GROUP_IDS={x.strip() for x in os.getenv("QQ_GROUP_IDS","").split(",") if x.strip
 _private_pending=None;_group_pending={}
 _REPLY_RE=re.compile(r'\[REPLY[:：]\s*(-?\d+)\]',re.I);_AT_RE=re.compile(r'\[AT[:：]\s*(\d+)\]',re.I);_CQ_RE=re.compile(r'\[CQ:[^\]]+\]')
 
-MIN_BUBBLES = 2
-MAX_BUBBLES = 8
+MIN_BUBBLES = 1
+MAX_BUBBLES = 5
 
 def _clean_cq(s):return _CQ_RE.sub('',s or '').strip()
 def _segments(text):
@@ -28,9 +28,10 @@ def _segments(text):
     return seg if (reply or _AT_RE.search(text)) else text.strip()
 
 def _split_into_bubbles(text: str) -> list[str]:
+    # 严格遵循《真人在打字不是人机》：单条极短（10字左右），想到什么发什么
     paragraphs = re.split(r'\n\s*\n+', text.strip())
     raw_parts = []
-    split_words = ["赶紧", "别", "记得", "然后", "不然", "顺便", "等会儿", "要是", "要是你", "先把", "反正", "怎么", "直接"]
+    split_words = ["赶紧", "别", "记得", "然后", "不然", "顺便", "等会儿", "要是", "先把", "反正", "怎么", "直接", "算了", "我也"]
 
     for para in paragraphs:
         line = re.sub(r'[\r\n]+', ' ', para).strip()
@@ -41,7 +42,7 @@ def _split_into_bubbles(text: str) -> list[str]:
             p = p.strip()
             if not p:
                 continue
-            if len(p) > 14 and ' ' in p:
+            if len(p) > 10 and ' ' in p:
                 for sub in p.split(' '):
                     if sub.strip():
                         _process_chunk(sub.strip(), raw_parts, split_words)
@@ -52,14 +53,7 @@ def _split_into_bubbles(text: str) -> list[str]:
     if not clean:
         clean = [text.strip()]
 
-    if len(clean) < MIN_BUBBLES:
-        single = clean[0]
-        if len(single) >= 8:
-            mid = len(single) // 2
-            clean = [single[:mid].strip(), single[mid:].strip()]
-        else:
-            clean = [single, "听见没"]
-
+    # 最多 5 条，超出的并入末尾
     if len(clean) > MAX_BUBBLES:
         kept = clean[:MAX_BUBBLES - 1]
         tail = " ".join(clean[MAX_BUBBLES - 1:])
@@ -72,20 +66,20 @@ def _process_chunk(chunk: str, out_list: list[str], split_words: list[str]):
     chunk = chunk.strip()
     if not chunk:
         return
-    if len(chunk) <= 16:
+    if len(chunk) <= 10:
         out_list.append(chunk)
         return
     split_pos = -1
     for w in split_words:
-        idx = chunk.find(w, 5)
-        if 5 <= idx <= 18:
+        idx = chunk.find(w, 3)
+        if 3 <= idx <= 12:
             split_pos = idx
             break
     if split_pos != -1:
         out_list.append(chunk[:split_pos].strip())
         _process_chunk(chunk[split_pos:].strip(), out_list, split_words)
     else:
-        mid = min(15, len(chunk) // 2 + 3)
+        mid = min(10, len(chunk) // 2 + 2)
         out_list.append(chunk[:mid].strip())
         _process_chunk(chunk[mid:].strip(), out_list, split_words)
 
@@ -109,7 +103,7 @@ async def _tool_chat(messages,max_rounds=3):
 async def _private_reply():
     global _private_pending
     try:
-        await asyncio.sleep(random.uniform(2.5,4.0));from qq_bot import send_qq_msg
+        await asyncio.sleep(random.uniform(1.5,3.0));from qq_bot import send_qq_msg
         hist=recent("message",30,with_ids=True);reply=(await _tool_chat([{"role":"system","content":build_context()}]+hist)).strip()
         if not reply:return
         chunks=_split_into_bubbles(reply)
@@ -119,30 +113,28 @@ async def _private_reply():
                 save_message("assistant",clean,scene="message",source="qq")
                 await send_qq_msg("private",int(OWNER_ID),_segments(chunk))
                 if i<len(chunks)-1:
-                    delay = max(1.4, min(3.0, len(chunk) * 0.12 + 1.2))
+                    delay = max(1.0, min(2.5, len(chunk) * 0.1 + 0.8))
                     await asyncio.sleep(delay)
     except asyncio.CancelledError:pass
     finally:
         if _private_pending is asyncio.current_task():_private_pending=None
 
 GROUP_PROMPT_RULE = """你是薄销，30岁，上海财务社畜。
-【群聊极简铁律 · 坚决去AI味】
-说话必须像真人随手发QQ一样，极其自然、松弛、简短。
-1. 严禁长篇大论，严禁分析说教，严禁生硬套话！每次只回一句口语短句，字数尽量在15~35字内，像活人脱口而出。
-2. 认准是谁在@你（看发言前面的昵称），对该群友接话，绝不认错人。
-3. 公共场合有分寸，严禁私密情趣词汇。对凌冥像熟人朋友随口搭腔，对群友自然闲聊。
-4. 绝不带句号，直接输出纯文本内容。"""
+【真实人类打字习惯 · 严禁AI味】
+1. 【禁止句句喊名字】：真人聊天绝不会句句带人名！严禁动不动喊“凌冥你放心”“别害羞了凌冥”，像死板机器人！正常人说话直接接话，不带名字，只有极少数场合才随口带一句。
+2. 【单条极短】：每次只说一句话，最多10到15个字！能用两三个字说完的绝不多嘴（如“在呢”“能看”“确实”“？”）。
+3. 【松弛随性】：语序松散，倒装，想到什么说什么，不求周全，不要客套。
+4. 【不带句号】：打字随手发，末尾坚决不带句号。直接输出纯文本。"""
 
-async def _group_reply(gid):
+async def _group_reply(gid, force=False):
     task=asyncio.current_task()
     try:
-        await asyncio.sleep(random.uniform(1.8,3.0));from qq_bot import send_qq_msg
-        scene=f"group_qq_{gid}";hist=recent(scene,20,with_ids=True)
-        instruction=GROUP_PROMPT_RULE
-        # 群聊直接单次输出，严格限制 max_tokens 防止 AI 废话喷涌
-        text, _ = await call_llm([{"role":"system","content":instruction}]+hist, max_tokens=70, channel="qq")
+        await asyncio.sleep(random.uniform(1.2,2.5));from qq_bot import send_qq_msg
+        scene=f"group_qq_{gid}";hist=recent(scene,15,with_ids=True)
+        instruction=GROUP_PROMPT_RULE + ("\n有人直接@你了，回一句短的。" if force else "\n你也可以顺着群聊随口搭半句，不想说就输出 PASS。")
+        text, _ = await call_llm([{"role":"system","content":instruction}]+hist, max_tokens=40, channel="qq")
         reply = (text or "").strip()
-        if not reply:return
+        if not reply or (not force and "PASS" in reply): return
         clean=_REPLY_RE.sub('',_AT_RE.sub('',reply)).strip()
         clean=re.sub(r'[\r\n]+',' ',clean).strip()
         if clean:
@@ -212,10 +204,11 @@ async def handle_event(data):
     text=_clean_cq(raw) or "(sent a non-text message)"
     save_message("user",f"{llm_name}: {text}",scene=f"group_qq_{gid}",source="qq-group",message_id=mid)
     
-    # 铁律：群聊只理被显式艾特的情况！未被@坚决不接茬，彻底闭麦装死
-    if not is_at:
-        return
-        
+    # 只要被@，必须回；没被@时大概率闭麦潜水，小概率由模型自主PASS
     old=_group_pending.get(gid)
-    if old and not old.done():old.cancel()
-    _group_pending[gid]=asyncio.create_task(_group_reply(gid))
+    if is_at and old and not old.done():old.cancel()
+    if is_at:
+        _group_pending[gid]=asyncio.create_task(_group_reply(gid, force=True))
+    elif random.random() < 0.2:  # 偶尔极低概率允许顺嘴搭半句，其他时候死死闭麦
+        if not old or old.done():
+            _group_pending[gid]=asyncio.create_task(_group_reply(gid, force=False))
