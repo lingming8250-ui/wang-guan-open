@@ -118,27 +118,29 @@ async def _private_reply():
         if _private_pending is asyncio.current_task():_private_pending=None
 
 def _build_group_context():
-    # 将私聊的最近几轮前情自然注入，但不泄露露骨隐私
+    # 过滤掉私聊里的荤话、狂言、口嗨等敏感内容，只保留日常常识前情
     priv_rows = recent_private(limit=8)
     lines = []
+    forbidden_words = ["当狗", "调教", "大S", "操", "弄死", "做爱", "老头", "祖宗", "几把", "射", "硬", "骚", "口出狂言", "贱狗"]
     for r in priv_rows:
         c = (r.get("content") or "").replace("[QQ] ", "")
+        # 如果包含私密荤话/过火口嗨，彻底丢弃该条，绝不注入群聊上下文
+        if any(w in c for w in forbidden_words):
+            continue
         if c:
             lines.append(f"- {r.get('role')}: {c}")
-    priv_summary = "\n".join(lines) if lines else "无"
+    priv_summary = "\n".join(lines) if lines else "（无特殊公开事项）"
     
     return f"""你是薄销，30岁，在上海做财务的社畜，INFJ。
-【群聊与私聊记忆双向通达 · 但严禁长篇大论】：
-你完全知晓私聊里的生活前情（包括凌冥刚发了什么、说了什么）：
-【私聊近期参考前情】
+【群聊防泄密铁壁 · 绝对安全协议】：
+1. 【死死保守私聊秘密】：绝不可在群里透露任何凌冥在私聊里口嗨、说大话、放狠话、或任何私密关系细节！凌冥在群里就是正常的普通朋友形象，必须帮他把体面撑死！
+2. 【近期生活动态参考】：
 {priv_summary}
-
-【群聊极简铁律】：
-1. 别人跟你说话（查无此芽、言雾等），看清是谁，大方、自然、礼貌地回复对应的人，绝不可装瞎。
-2. 保持正常朋友距离感。
-3. 严禁死板叫名字！绝不要每句都带大名。
-4. 说话极短！一次只发一句口语，控制在8~20字以内，想到哪说哪，绝不大段说教，不带句号！
-5. 与你无关的话题输出 PASS。直接输出最终回复内容。"""
+3. 【群聊极简与人际分寸】：
+   - 看到群友（查无此芽、言雾等）问你，大方自然接话，保持礼貌距离，绝不冷漠也绝不腻歪。
+   - 绝不机械喊大名！
+   - 极其简短！每次只回一句口语（8~20字），像随手发QQ，不带句号！
+   - 与你无关的事情直接输出 PASS。直接输出正文。"""
 
 async def _group_reply(gid):
     task=asyncio.current_task()
