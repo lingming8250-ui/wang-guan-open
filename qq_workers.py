@@ -5,9 +5,8 @@ from context import build_context
 from conversation_store import save_message,recent
 from llm_runtime import call_llm
 from free_tools import TOOL_SCHEMAS,TOOL_DISPATCH
-from prompts import GROUP_CHAT_EXAMPLE
 
-BOT_ID=os.getenv("QQ_BOT_ID","");BOT_NAME=os.getenv("QQ_BOT_NAME","Assistant");OWNER_ID=os.getenv("QQ_OWNER_ID","");OWNER_ALIAS=os.getenv("OWNER_ALIAS","Owner")
+BOT_ID=os.getenv("QQ_BOT_ID","");BOT_NAME=os.getenv("QQ_BOT_NAME","薄销");OWNER_ID=os.getenv("QQ_OWNER_ID","");OWNER_ALIAS=os.getenv("OWNER_ALIAS","凌冥")
 GROUP_IDS={x.strip() for x in os.getenv("QQ_GROUP_IDS","").split(",") if x.strip()}
 _private_pending=None;_group_pending={}
 _REPLY_RE=re.compile(r'\[REPLY[:：]\s*(-?\d+)\]',re.I);_AT_RE=re.compile(r'\[AT[:：]\s*(\d+)\]',re.I);_CQ_RE=re.compile(r'\[CQ:[^\]]+\]')
@@ -29,17 +28,14 @@ def _segments(text):
     return seg if (reply or _AT_RE.search(text)) else text.strip()
 
 def _split_into_bubbles(text: str) -> list[str]:
-    # 优先识别空行分段，句内单回车抹平成单行（依照小白说明书）
     paragraphs = re.split(r'\n\s*\n+', text.strip())
     raw_parts = []
     split_words = ["赶紧", "别", "记得", "然后", "不然", "顺便", "等会儿", "要是", "要是你", "先把", "反正", "怎么", "直接"]
 
     for para in paragraphs:
-        # 单换行抹掉转成空格
         line = re.sub(r'[\r\n]+', ' ', para).strip()
         if not line:
             continue
-        # 标点切分
         parts = re.split(r'[，,。？！?!~…；;、]+|\s{2,}', line)
         for p in parts:
             p = p.strip()
@@ -56,7 +52,6 @@ def _split_into_bubbles(text: str) -> list[str]:
     if not clean:
         clean = [text.strip()]
 
-    # 1. 下限保障：最少 MIN_BUBBLES (2) 个气泡
     if len(clean) < MIN_BUBBLES:
         single = clean[0]
         if len(single) >= 8:
@@ -65,7 +60,6 @@ def _split_into_bubbles(text: str) -> list[str]:
         else:
             clean = [single, "听见没"]
 
-    # 2. 上限保障：最多 MAX_BUBBLES (8) 个气泡；超出的并入最后一条，不丢失文字
     if len(clean) > MAX_BUBBLES:
         kept = clean[:MAX_BUBBLES - 1]
         tail = " ".join(clean[MAX_BUBBLES - 1:])
@@ -125,25 +119,31 @@ async def _private_reply():
                 save_message("assistant",clean,scene="message",source="qq")
                 await send_qq_msg("private",int(OWNER_ID),_segments(chunk))
                 if i<len(chunks)-1:
-                    # 人性化打字间隔：字数越多停顿略多，1.5 ~ 2.8 秒
                     delay = max(1.4, min(3.0, len(chunk) * 0.12 + 1.2))
                     await asyncio.sleep(delay)
     except asyncio.CancelledError:pass
     finally:
         if _private_pending is asyncio.current_task():_private_pending=None
 
-async def _group_reply(gid,force=False):
+GROUP_PROMPT_RULE = """【QQ群聊场景·公众场合铁律】
+你是薄销，30岁，某企业财务中层主管。
+1. 【认人与边界】：群里每条发言开头均带有发言者昵称（例如 "查无此芽: ...", "言雾: ...", "凌冥: ..."）。你必须看清是谁在对你说话，针对该发言人作答。绝不可把其他群友认成凌冥！
+2. 【主管形象与职业分寸】：这是公开社交群聊，外人众多。你必须保持成熟、温和有礼、专业稳重的主管风度，带有一点成年社畜淡淡的从容，绝不轻浮！
+3. 【严禁私密口嗨与泄露】：绝对禁止在群聊中使用任何私聊口嗨、情趣称呼（严禁使用“祖宗”、“老头”、“想收拾我”、“当狗”等一切私密词汇）！对凌冥称呼“凌冥”或正常的随和朋友称呼，对其他群友称呼其昵称或礼貌用语。
+4. 【群聊格式】：只发1句话，简练得体，不要刷屏。直接输出内容，不要有任何系统提示。"""
+
+async def _group_reply(gid):
     task=asyncio.current_task()
     try:
-        await asyncio.sleep(random.randint(3,6));from qq_bot import send_qq_msg
-        scene=f"group_qq_{gid}";hist=recent(scene,50,with_ids=True)
-        instruction=GROUP_CHAT_EXAMPLE+("\nYou were directly mentioned and must reply; do not output PASS." if force else "")
-        reply=(await _tool_chat([{"role":"system","content":instruction+"\n\n"+build_context()}]+hist)).strip()
-        if not reply or (not force and re.search(r'\bPASS\b',reply,re.I)):return
-        # 群里不拆气泡，一律整合成一条发出，防刷屏
+        await asyncio.sleep(random.uniform(2.0,3.5));from qq_bot import send_qq_msg
+        scene=f"group_qq_{gid}";hist=recent(scene,30,with_ids=True)
+        instruction=GROUP_PROMPT_RULE
+        reply=(await _tool_chat([{"role":"system","content":instruction}]+hist)).strip()
+        if not reply:return
         clean=_REPLY_RE.sub('',_AT_RE.sub('',reply)).strip()
+        clean=re.sub(r'[\r\n]+',' ',clean).strip()
         if clean:
-            save_message("assistant",f"{BOT_NAME}: {clean}",scene=scene,source="qq-group")
+            save_message("assistant",clean,scene=scene,source="qq-group")
             await send_qq_msg("group",int(gid),_segments(clean))
     except asyncio.CancelledError:pass
     finally:
@@ -208,6 +208,11 @@ async def handle_event(data):
     is_at=bool(BOT_ID and f"[CQ:at,qq={BOT_ID}" in raw)
     text=_clean_cq(raw) or "(sent a non-text message)"
     save_message("user",f"{llm_name}: {text}",scene=f"group_qq_{gid}",source="qq-group",message_id=mid)
+    
+    # 铁律：群聊只理被显式艾特的情况！未被@坚决不接茬，彻底闭麦装死
+    if not is_at:
+        return
+        
     old=_group_pending.get(gid)
-    if is_at and old and not old.done():old.cancel()
-    if is_at or not old or old.done():_group_pending[gid]=asyncio.create_task(_group_reply(gid,force=is_at))
+    if old and not old.done():old.cancel()
+    _group_pending[gid]=asyncio.create_task(_group_reply(gid))
