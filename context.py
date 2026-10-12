@@ -21,7 +21,7 @@ def register_context_provider(provider:ContextProvider):
     if provider not in _PROVIDERS:_PROVIDERS.append(provider)
 
 def unregister_context_provider(provider:ContextProvider):
-    if provider in _PROVIDERS:_PROVIDERS.remove(provider)
+    if provider not in _PROVIDERS:_PROVIDERS.remove(provider)
 
 
 def _base_prompt():
@@ -64,6 +64,18 @@ def _rolling():
     return "【Recent cross-platform context】\n"+(rows[0].get("content") or "")
 
 
+def _recent_groups():
+    try:
+        from conversation_store import recent_groups
+        rows = recent_groups(limit=10)
+        if not rows: return ""
+        lines = [f"{r.get('content','')}" for r in rows if r.get('content')]
+        if not lines: return ""
+        return "【群聊实时动态追踪（你在私聊与当前对话中知晓这些群聊前情）】\n" + "\n".join(lines)
+    except Exception:
+        return ""
+
+
 def _time():
     now=datetime.now(ZoneInfo(DEFAULT_TIMEZONE))
     return f"【Current time】{now.strftime('%Y-%m-%d %H:%M %Z')}"
@@ -71,7 +83,7 @@ def _time():
 
 def build_context():
     parts=[_base_prompt()]
-    for fn in (_persona,_memories,_threads,_rolling):
+    for fn in (_persona,_memories,_threads,_rolling,_recent_groups):
         try:v=(fn() or "").strip()
         except Exception:v=""
         if v:parts.append(v)
