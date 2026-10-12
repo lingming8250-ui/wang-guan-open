@@ -80,12 +80,12 @@ async def qq_proactive_loop():
             await asyncio.sleep(3600)
 
     # 每天固定主动推送的时刻点（北京时间）
-    # 08:30 催起早八/问早, 12:20 催午饭, 18:30 催晚饭, 23:45 催睡觉
-    CHECK_HOURS = {"08:30", "12:20", "18:30", "23:45"}
+    # 08:00 / 08:30 催起早八, 11:40 / 12:20 催午饭, 17:30 / 18:30 催晚饭, 23:45 催睡觉
+    CHECK_HOURS = {"08:00", "08:30", "11:40", "12:20", "12:45", "17:30", "18:30", "23:45"}
     sent_keys = set()
 
     while True:
-        await asyncio.sleep(30)
+        await asyncio.sleep(20)
         now = datetime.now(tz)
         hm = now.strftime("%H:%M")
         day_str = now.strftime("%Y-%m-%d")
@@ -99,14 +99,18 @@ async def qq_proactive_loop():
             try:
                 from context import build_context
                 from conversation_store import recent, save_message
-                from qq_bot import send_qq_msg
+                from qq_bot import send_qq_msg, _conn
+
+                if _conn is None:
+                    log.warning("QQ connection (_conn) is currently None; cannot push message at %s", hm)
+                    continue
 
                 hist = recent("message", 20)
                 prompt = (
                     build_context()
                     + f"\n\n【当前现实时间】北京时间 {now.strftime('%m月%d日 %H:%M')}\n"
                     + "【任务指示】你主动在 QQ 上给凌冥发消息。根据当前具体时刻（如果是早八催起床、中午催吃热乎的、傍晚问晚饭、深夜催睡觉）"
-                    + "结合你了解的他的生活细节（哈尔滨降温、肠胃弱、爱口嗨），像真人随手敲手机一样发 1 到 2 句短促口语。"
+                    + "结合你了解的他的生活细节（哈尔滨降温、肠胃弱、爱口嗨、正在上财管/管会课），像真人随手敲手机一样发 1 到 2 句短促口语。"
                     + "严禁做作深情，严禁说教，不带句号，直接输出内容。"
                 )
                 messages = [{"role": "system", "content": prompt}]
@@ -122,7 +126,8 @@ async def qq_proactive_loop():
                     for i, chunk in enumerate(chunks):
                         if chunk:
                             save_message("assistant", chunk, scene="message", source="qq-proactive")
-                            await send_qq_msg("private", int(owner_id), _segments(chunk))
+                            res = await send_qq_msg("private", int(owner_id), _segments(chunk))
+                            log.info("send_qq_msg result: %s for chunk: %s", res, chunk)
                             if i < len(chunks) - 1:
                                 await asyncio.sleep(random.uniform(1.2, 2.2))
                     log.info("Sent QQ proactive message: %s", msg)
