@@ -12,6 +12,9 @@ GROUP_IDS={x.strip() for x in os.getenv("QQ_GROUP_IDS","").split(",") if x.strip
 _private_pending=None;_group_pending={}
 _REPLY_RE=re.compile(r'\[REPLY[:：]\s*(-?\d+)\]',re.I);_AT_RE=re.compile(r'\[AT[:：]\s*(\d+)\]',re.I);_CQ_RE=re.compile(r'\[CQ:[^\]]+\]')
 
+MIN_BUBBLES = 2
+MAX_BUBBLES = 8
+
 def _clean_cq(s):return _CQ_RE.sub('',s or '').strip()
 def _segments(text):
     reply=None;m=_REPLY_RE.search(text)
@@ -26,51 +29,68 @@ def _segments(text):
     return seg if (reply or _AT_RE.search(text)) else text.strip()
 
 def _split_into_bubbles(text: str) -> list[str]:
-    # 第一步：按所有常见标点、换行、顿号分号、破折号、连续空格切
-    raw_parts = re.split(r'[\r\n]+|[，,。？！?!~…；;、]+|\s{2,}', text)
-    bubbles = []
-    
-    # 辅助切分词（当句子过长且没有标点时在这些词前切）
+    # 优先识别空行分段，句内单回车抹平成单行（依照小白说明书）
+    paragraphs = re.split(r'\n\s*\n+', text.strip())
+    raw_parts = []
     split_words = ["赶紧", "别", "记得", "然后", "不然", "顺便", "等会儿", "要是", "要是你", "先把", "反正", "怎么", "直接"]
-    
-    for p in raw_parts:
-        p = p.strip()
-        if not p:
+
+    for para in paragraphs:
+        # 单换行抹掉转成空格
+        line = re.sub(r'[\r\n]+', ' ', para).strip()
+        if not line:
             continue
-        
-        # 如果包含单空格且偏长，先按单空格拆
-        if len(p) > 10 and ' ' in p:
-            sub = [s.strip() for s in p.split(' ') if s.strip()]
-            for item in sub:
-                _process_chunk(item, bubbles, split_words)
+        # 标点切分
+        parts = re.split(r'[，,。？！?!~…；;、]+|\s{2,}', line)
+        for p in parts:
+            p = p.strip()
+            if not p:
+                continue
+            if len(p) > 14 and ' ' in p:
+                for sub in p.split(' '):
+                    if sub.strip():
+                        _process_chunk(sub.strip(), raw_parts, split_words)
+            else:
+                _process_chunk(p, raw_parts, split_words)
+
+    clean = [b for b in raw_parts if re.search(r'[\w\u4e00-\u9fa5]', b)]
+    if not clean:
+        clean = [text.strip()]
+
+    # 1. 下限保障：最少 MIN_BUBBLES (2) 个气泡
+    if len(clean) < MIN_BUBBLES:
+        single = clean[0]
+        if len(single) >= 8:
+            mid = len(single) // 2
+            clean = [single[:mid].strip(), single[mid:].strip()]
         else:
-            _process_chunk(p, bubbles, split_words)
-            
-    clean = [b for b in bubbles if re.search(r'[\w\u4e00-\u9fa5]', b)]
-    return clean or [text.strip()]
+            clean = [single, "听见没"]
+
+    # 2. 上限保障：最多 MAX_BUBBLES (8) 个气泡；超出的并入最后一条，不丢失文字
+    if len(clean) > MAX_BUBBLES:
+        kept = clean[:MAX_BUBBLES - 1]
+        tail = " ".join(clean[MAX_BUBBLES - 1:])
+        kept.append(tail)
+        clean = kept
+
+    return clean
 
 def _process_chunk(chunk: str, out_list: list[str], split_words: list[str]):
     chunk = chunk.strip()
     if not chunk:
         return
-    # 如果短于等于 16 字，直接作为一个气泡
     if len(chunk) <= 16:
         out_list.append(chunk)
         return
-        
-    # 如果超过 16 字，尝试在连词/转折词前拆开
     split_pos = -1
     for w in split_words:
-        idx = chunk.find(w, 5) # 至少在第5个字符之后
+        idx = chunk.find(w, 5)
         if 5 <= idx <= 18:
             split_pos = idx
             break
-            
     if split_pos != -1:
         out_list.append(chunk[:split_pos].strip())
         _process_chunk(chunk[split_pos:].strip(), out_list, split_words)
     else:
-        # 实在没有明显连接词，但在 12~15 字硬拆，坚决不发大段
         mid = min(15, len(chunk) // 2 + 3)
         out_list.append(chunk[:mid].strip())
         _process_chunk(chunk[mid:].strip(), out_list, split_words)
@@ -105,7 +125,9 @@ async def _private_reply():
                 save_message("assistant",clean,scene="message",source="qq")
                 await send_qq_msg("private",int(OWNER_ID),_segments(chunk))
                 if i<len(chunks)-1:
-                    await asyncio.sleep(random.uniform(1.2,2.0))
+                    # 人性化打字间隔：字数越多停顿略多，1.5 ~ 2.8 秒
+                    delay = max(1.4, min(3.0, len(chunk) * 0.12 + 1.2))
+                    await asyncio.sleep(delay)
     except asyncio.CancelledError:pass
     finally:
         if _private_pending is asyncio.current_task():_private_pending=None
@@ -118,14 +140,11 @@ async def _group_reply(gid,force=False):
         instruction=GROUP_CHAT_EXAMPLE+("\nYou were directly mentioned and must reply; do not output PASS." if force else "")
         reply=(await _tool_chat([{"role":"system","content":instruction+"\n\n"+build_context()}]+hist)).strip()
         if not reply or (not force and re.search(r'\bPASS\b',reply,re.I)):return
-        chunks=_split_into_bubbles(reply)
-        for i,chunk in enumerate(chunks):
-            clean=_REPLY_RE.sub('',_AT_RE.sub('',chunk)).strip()
-            if clean:
-                save_message("assistant",f"{BOT_NAME}: {clean}",scene=scene,source="qq-group")
-                await send_qq_msg("group",int(gid),_segments(chunk))
-                if i<len(chunks)-1:
-                    await asyncio.sleep(random.uniform(1.0,2.0))
+        # 群里不拆气泡，一律整合成一条发出，防刷屏
+        clean=_REPLY_RE.sub('',_AT_RE.sub('',reply)).strip()
+        if clean:
+            save_message("assistant",f"{BOT_NAME}: {clean}",scene=scene,source="qq-group")
+            await send_qq_msg("group",int(gid),_segments(clean))
     except asyncio.CancelledError:pass
     finally:
         if _group_pending.get(gid) is task:_group_pending.pop(gid,None)
