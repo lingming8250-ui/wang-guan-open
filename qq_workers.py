@@ -118,16 +118,19 @@ async def _private_reply():
         if _private_pending is asyncio.current_task():_private_pending=None
 
 GROUP_PROMPT_RULE = """你是薄销，30岁，上海财务社畜。
-【群聊判断与意图判定】：
-1. 你的名字叫“薄销”，群友提到你或者@你时，你要看清上下文意图：
-   - 如果对方是在问你、叫你、跟你对话（如“薄销在干嘛”“薄销来算个账”），你接话；
-   - 如果只是在陈述、调侃别人或者提了嘴名字但并不需要你回答（如“薄销上班去了”“薄销肯定在加班”），或者话题与你无关，输出 PASS，绝对不要接话！
-2. 【对其他人的社交距离】：保持礼貌距离感和成年人的冷淡分寸。不要跟其他人热络调情，不要跟其他人打情骂俏，话少、淡淡的。
-3. 【真人极简打字】：
-   - 严禁机械叫名字！不许动不动把对方名字挂在嘴边。
-   - 极短！最多10到15个字，能回两三个字的绝不多回。
+【群聊交互与人际礼仪】：
+1. 【看清发言对象并回应对方】：
+   - 群里所有人（不仅是凌冥，包括查无此芽、言雾等群友）的发言你都能看得清清楚楚。
+   - 当其他群友在跟你说话、问你问题、或者点你名字时，你要大方、自然、礼貌地回复人家，绝不可无视或故意不理人！
+   - 看清发言前面的昵称，如果是查无此芽在问你，你就回答查无此芽；如果是言雾在找你，你就回应言雾。
+2. 【社交距离与分寸感】：
+   - 对其他群友保持正常朋友的礼貌社交距离，随和、客气、自然，不要打情骂俏，也不要冷漠无情。
+   - 只有对凌冥才是特殊关系，但公众场合同样不提私密隐私词汇。
+3. 【真人极简打字风格】：
+   - 严禁机械叫名字！
+   - 回复简短，一句话10到20字以内，像真人随手敲出来的，绝不大段说教。
    - 绝不带句号。
-   - 如果决定不说话，直接输出单个单词 PASS。"""
+   - 如果群友的话完全与你无关（纯粹群友之间内部闲聊不需要你插嘴），直接输出单词 PASS。"""
 
 async def _group_reply(gid):
     task=asyncio.current_task()
@@ -135,7 +138,7 @@ async def _group_reply(gid):
         await asyncio.sleep(random.uniform(1.2,2.3));from qq_bot import send_qq_msg
         scene=f"group_qq_{gid}";hist=recent(scene,15,with_ids=True)
         instruction=GROUP_PROMPT_RULE
-        text, _ = await call_llm([{"role":"system","content":instruction}]+hist, max_tokens=35, channel="qq")
+        text, _ = await call_llm([{"role":"system","content":instruction}]+hist, max_tokens=40, channel="qq")
         reply = (text or "").strip()
         if not reply or "PASS" in reply: return
         clean=_REPLY_RE.sub('',_AT_RE.sub('',reply)).strip()
@@ -204,14 +207,12 @@ async def handle_event(data):
     sender=data.get("sender") or {};name=sender.get("card") or sender.get("nickname") or uid
     llm_name=OWNER_ALIAS if OWNER_ID and uid==OWNER_ID else name
     is_at=bool(BOT_ID and f"[CQ:at,qq={BOT_ID}" in raw)
+    is_reply=bool("[CQ:reply" in raw)
     text=_clean_cq(raw) or "(sent a non-text message)"
     save_message("user",f"{llm_name}: {text}",scene=f"group_qq_{gid}",source="qq-group",message_id=mid)
     
-    # 判断是否可能需要触发：
-    # 1. 显式 @ 了薄销
-    # 2. 文本中出现了薄销的名字（如“薄销在干嘛”）
-    # 3. 正在被私聊/特定会话直接带出
-    needs_eval = is_at or ("薄销" in text) or ("老头" in text and uid == OWNER_ID)
+    # 只要被@、被回复、或者任何群友（查无此芽、言雾等）叫了薄销，都必须进评估回复
+    needs_eval = is_at or is_reply or ("薄销" in text) or ("老头" in text and uid == OWNER_ID)
     if not needs_eval:
         return
         
