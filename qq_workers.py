@@ -35,30 +35,31 @@ def _segments(text, fallback_reply_id=None):
     return seg if (reply_id or _AT_RE.search(text)) else text.strip()
 
 def _split_into_bubbles(text: str, max_b: int = MAX_BUBBLES) -> list[str]:
-    """严格遵循《小白说明书》标准分条逻辑：
-    1. 只有【空一整行】(\\n\\s*\\n+)才算分气泡！
-    2. 单回车是断句不是分段，内部抹平成连续完整句子，绝不硬切单词！
-    3. 超过上限的合并入最后一条，绝不切断丢字！
+    """严格遵循：
+    1. 换行即分气泡（无论单回车还是多回车）
+    2. 如果只有一个长段落，按换行/句号/感叹号/问号等标点拆成自然短句
+    3. 保留正常的逗号、句号、感叹号、问号等标点符号，严禁通篇用空格代替标点
+    4. 每一句话一个独立气泡！
     """
-    raw_paras = re.split(r'\n\s*\n+', text.strip())
+    raw_lines = [l.strip() for l in re.split(r'[\r\n]+', text.strip()) if l.strip()]
     bubbles = []
-    for p in raw_paras:
-        clean_line = re.sub(r'[\r\n]+', ' ', p).strip()
-        if clean_line:
-            bubbles.append(clean_line)
-
-    if len(bubbles) == 1 and len(bubbles[0]) > 28:
-        sub_sents = re.split(r'(?<=[。？！?!~…])\s*', bubbles[0])
-        sub_sents = [s.strip() for s in sub_sents if s.strip()]
-        if len(sub_sents) > 1:
-            bubbles = sub_sents
+    for line in raw_lines:
+        if len(line) > 24:
+            sub_sents = re.split(r'(?<=[。？！?!~…])\s*', line)
+            sub_sents = [s.strip() for s in sub_sents if s.strip()]
+            if sub_sents:
+                bubbles.extend(sub_sents)
+            else:
+                bubbles.append(line)
+        else:
+            bubbles.append(line)
 
     if not bubbles:
         bubbles = [text.strip()]
 
     if len(bubbles) > max_b:
         kept = bubbles[:max_b - 1]
-        tail = " ".join(bubbles[max_b - 1:])
+        tail = "，".join(bubbles[max_b - 1:])
         kept.append(tail)
         bubbles = kept
 
@@ -81,15 +82,14 @@ async def _tool_chat(messages,max_rounds=3):
             messages.append({"role":"tool","tool_call_id":tc.get("id",""),"content":str(r)})
     text,_=await call_llm(messages,channel="qq");return text
 
-PRIVATE_PROMPT_INSTRUCTION = """【分气泡铁律（严格执行小白说明书）】
-你想让对方收到多个气泡，必须在两句话之间【空一整行】（敲两个回车）！
+PRIVATE_PROMPT_INSTRUCTION = """【标点与分气泡铁律（严格执行凌冥要求）】
+1. 【必须使用正常标点符号】：严禁用空格代替逗号或句号！句子该用逗号用逗号，该用问号用问号，语气词该加逗号加逗号。
+2. 【一句话一个气泡】：想发多句话，每句话必须独占一行（直接敲回车换行），不要把两句长话黏在同一个气泡里！
 示例：
-第一句话
+想吃就买点呗，大冷天的吃点热乎的暖胃。
+不过别加辣汤，挑点清淡的萝卜豆腐垫垫肚。
 
-第二句话
-
-【严禁碎句断行】：一句话中间绝对不要敲回车，也绝不要把一个词或短语从中间截断！每句话必须通顺完整。
-日常回复一般 1 到 3 个气泡，想到什么发什么，随性自然，末尾不带句号。"""
+3. 语气随性自然、接地气，符合三十岁疲惫社友的真实聊天状态，每次回复 1 到 2 句话，分 1 到 2 个气泡发送。"""
 
 async def _private_reply(last_msg_id=None):
     global _private_pending
@@ -133,10 +133,10 @@ def _build_group_context():
 2. 【死死保守私聊秘密】：绝不可在群里透露任何凌冥在私聊里的口嗨、狠话或私密情趣！帮他撑住体面。
 3. 【近期生活动态参考】：
 {priv_summary}
-4. 【群聊分气泡规范】：
-   - 想分两条发就空一整行，绝不要在一句话中间乱断句！
-   - 绝不机械复读人名！
-   - 保持真人朋友距离，随和松弛，不带句号。直接输出内容或 PASS。"""
+4. 【群聊规范】：
+   - 必须使用正常标点符号，严禁通篇用空格代替逗号！
+   - 一句话换一行，一句话一个气泡。
+   - 保持真人朋友距离，随和松弛。直接输出内容或 PASS。"""
 
 async def _group_reply(gid, last_msg_id=None):
     task=asyncio.current_task()
