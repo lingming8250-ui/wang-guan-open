@@ -26,22 +26,54 @@ def _segments(text):
     return seg if (reply or _AT_RE.search(text)) else text.strip()
 
 def _split_into_bubbles(text: str) -> list[str]:
-    # 强制将大长句切成一句话一个气泡（按换行、空格、逗号句号标点等切碎）
-    # 只要包含两个以上空格或标点，一律拆开
-    parts = re.split(r'[\r\n]+|[，,。？！?!~…]+|\s{2,}', text)
+    # 第一步：按所有常见标点、换行、顿号分号、破折号、连续空格切
+    raw_parts = re.split(r'[\r\n]+|[，,。？！?!~…；;、]+|\s{2,}', text)
     bubbles = []
-    for p in parts:
+    
+    # 辅助切分词（当句子过长且没有标点时在这些词前切）
+    split_words = ["赶紧", "别", "记得", "然后", "不然", "顺便", "等会儿", "要是", "要是你", "先把", "反正", "怎么", "直接"]
+    
+    for p in raw_parts:
         p = p.strip()
         if not p:
             continue
-        # 如果单段依然很长（大于14字），顺着任意单个空格拆
-        if len(p) > 14 and ' ' in p:
+        
+        # 如果包含单空格且偏长，先按单空格拆
+        if len(p) > 10 and ' ' in p:
             sub = [s.strip() for s in p.split(' ') if s.strip()]
-            bubbles.extend(sub)
+            for item in sub:
+                _process_chunk(item, bubbles, split_words)
         else:
-            bubbles.append(p)
+            _process_chunk(p, bubbles, split_words)
+            
     clean = [b for b in bubbles if re.search(r'[\w\u4e00-\u9fa5]', b)]
     return clean or [text.strip()]
+
+def _process_chunk(chunk: str, out_list: list[str], split_words: list[str]):
+    chunk = chunk.strip()
+    if not chunk:
+        return
+    # 如果短于等于 16 字，直接作为一个气泡
+    if len(chunk) <= 16:
+        out_list.append(chunk)
+        return
+        
+    # 如果超过 16 字，尝试在连词/转折词前拆开
+    split_pos = -1
+    for w in split_words:
+        idx = chunk.find(w, 5) # 至少在第5个字符之后
+        if 5 <= idx <= 18:
+            split_pos = idx
+            break
+            
+    if split_pos != -1:
+        out_list.append(chunk[:split_pos].strip())
+        _process_chunk(chunk[split_pos:].strip(), out_list, split_words)
+    else:
+        # 实在没有明显连接词，但在 12~15 字硬拆，坚决不发大段
+        mid = min(15, len(chunk) // 2 + 3)
+        out_list.append(chunk[:mid].strip())
+        _process_chunk(chunk[mid:].strip(), out_list, split_words)
 
 async def _tool_chat(messages,max_rounds=3):
     for _ in range(max_rounds):
