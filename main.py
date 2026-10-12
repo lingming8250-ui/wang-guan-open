@@ -17,7 +17,7 @@ from context import build_context
 from free_tools import TOOL_SCHEMAS, TOOL_DISPATCH
 from conversation_store import save_message
 from memory_store import semantic_memory
-from routes_admin import memories as admin_memories, threads as admin_threads, reminders as admin_reminders, trigger_summary, trigger_compress
+from routes_admin import memories as admin_memories, threads as admin_threads, reminders as admin_reminders, trigger_summary, trigger_compress, trigger_qq_test
 from runtime_config import (
     load_config,
     save_config,
@@ -469,7 +469,6 @@ async def chat_completions(request: Request):
 @asynccontextmanager
 async def _lifespan(app):
     tasks = []
-    # 启动时在后台自动检测并下载/补全 4000+ 四级全量真题大词库
     tasks.append(_asyncio.create_task(auto_ensure_full_vocab()))
     if os.environ.get("WX_ILINK_TOKEN") or os.environ.get("SUPABASE_URL"):
         try:
@@ -497,6 +496,7 @@ app = Starlette(routes=[
     Route("/admin/reminders", admin_reminders, methods=["GET"]),
     Route("/admin/trigger-summary", trigger_summary, methods=["POST"]),
     Route("/admin/trigger-compress", trigger_compress, methods=["POST"]),
+    Route("/admin/trigger-qq-test", trigger_qq_test, methods=["POST"]),
     Route("/v1/chat/completions", chat_completions, methods=["POST"]),
 ], lifespan=_lifespan)
 
