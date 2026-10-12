@@ -27,3 +27,10 @@ def recent(scene: str = "message", limit: int = 30, with_ids: bool = False) -> l
 def recent_groups(limit: int = 50) -> list:
     rows = get("chat_context", f"type=like.group_*&order=seq.desc&limit={max(1,min(limit,200))}")
     rows.reverse(); return rows
+
+
+def recent_private(limit: int = 15) -> list:
+    """获取私聊最近对话，供群聊了解前情但绝不泄密"""
+    rows = get("chat_context", f"type=eq.message&order=seq.desc&limit={max(1,min(limit,50))}")
+    rows.reverse()
+    return rows
