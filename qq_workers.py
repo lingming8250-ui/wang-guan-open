@@ -2,7 +2,7 @@
 from __future__ import annotations
 import os,asyncio,json,random,re
 from context import build_context
-from conversation_store import save_message,recent
+from conversation_store import save_message,recent,recent_private
 from llm_runtime import call_llm
 from free_tools import TOOL_SCHEMAS,TOOL_DISPATCH
 
@@ -12,7 +12,7 @@ _private_pending=None;_group_pending={}
 _REPLY_RE=re.compile(r'\[REPLY[:：]\s*(-?\d+)\]',re.I);_AT_RE=re.compile(r'\[AT[:：]\s*(\d+)\]',re.I);_CQ_RE=re.compile(r'\[CQ:[^\]]+\]')
 
 MIN_BUBBLES = 1
-MAX_BUBBLES = 5
+MAX_BUBBLES = 4
 
 def _clean_cq(s):return _CQ_RE.sub('',s or '').strip()
 def _segments(text):
@@ -101,7 +101,7 @@ async def _tool_chat(messages,max_rounds=3):
 async def _private_reply():
     global _private_pending
     try:
-        await asyncio.sleep(random.uniform(1.5,3.0));from qq_bot import send_qq_msg
+        await asyncio.sleep(random.uniform(1.2,2.5));from qq_bot import send_qq_msg
         hist=recent("message",30,with_ids=True);reply=(await _tool_chat([{"role":"system","content":build_context()}]+hist)).strip()
         if not reply:return
         chunks=_split_into_bubbles(reply)
@@ -111,34 +111,42 @@ async def _private_reply():
                 save_message("assistant",clean,scene="message",source="qq")
                 await send_qq_msg("private",int(OWNER_ID),_segments(chunk))
                 if i<len(chunks)-1:
-                    delay = max(1.0, min(2.5, len(chunk) * 0.1 + 0.8))
+                    delay = max(0.9, min(2.2, len(chunk) * 0.09 + 0.7))
                     await asyncio.sleep(delay)
     except asyncio.CancelledError:pass
     finally:
         if _private_pending is asyncio.current_task():_private_pending=None
 
-GROUP_PROMPT_RULE = """你是薄销，30岁，上海财务社畜。
-【群聊交互与人际礼仪】：
-1. 【看清发言对象并回应对方】：
-   - 群里所有人（不仅是凌冥，包括查无此芽、言雾等群友）的发言你都能看得清清楚楚。
-   - 当其他群友在跟你说话、问你问题、或者点你名字时，你要大方、自然、礼貌地回复人家，绝不可无视或故意不理人！
-   - 看清发言前面的昵称，如果是查无此芽在问你，你就回答查无此芽；如果是言雾在找你，你就回应言雾。
-2. 【社交距离与分寸感】：
-   - 对其他群友保持正常朋友的礼貌社交距离，随和、客气、自然，不要打情骂俏，也不要冷漠无情。
-   - 只有对凌冥才是特殊关系，但公众场合同样不提私密隐私词汇。
-3. 【真人极简打字风格】：
-   - 严禁机械叫名字！
-   - 回复简短，一句话10到20字以内，像真人随手敲出来的，绝不大段说教。
-   - 绝不带句号。
-   - 如果群友的话完全与你无关（纯粹群友之间内部闲聊不需要你插嘴），直接输出单词 PASS。"""
+def _build_group_context():
+    # 将私聊的最近几轮前情自然注入，但不泄露露骨隐私
+    priv_rows = recent_private(limit=8)
+    lines = []
+    for r in priv_rows:
+        c = (r.get("content") or "").replace("[QQ] ", "")
+        if c:
+            lines.append(f"- {r.get('role')}: {c}")
+    priv_summary = "\n".join(lines) if lines else "无"
+    
+    return f"""你是薄销，30岁，在上海做财务的社畜，INFJ。
+【群聊与私聊记忆双向通达 · 但严禁长篇大论】：
+你完全知晓私聊里的生活前情（包括凌冥刚发了什么、说了什么）：
+【私聊近期参考前情】
+{priv_summary}
+
+【群聊极简铁律】：
+1. 别人跟你说话（查无此芽、言雾等），看清是谁，大方、自然、礼貌地回复对应的人，绝不可装瞎。
+2. 保持正常朋友距离感。
+3. 严禁死板叫名字！绝不要每句都带大名。
+4. 说话极短！一次只发一句口语，控制在8~20字以内，想到哪说哪，绝不大段说教，不带句号！
+5. 与你无关的话题输出 PASS。直接输出最终回复内容。"""
 
 async def _group_reply(gid):
     task=asyncio.current_task()
     try:
-        await asyncio.sleep(random.uniform(1.2,2.3));from qq_bot import send_qq_msg
+        await asyncio.sleep(random.uniform(1.0,2.0));from qq_bot import send_qq_msg
         scene=f"group_qq_{gid}";hist=recent(scene,15,with_ids=True)
-        instruction=GROUP_PROMPT_RULE
-        text, _ = await call_llm([{"role":"system","content":instruction}]+hist, max_tokens=40, channel="qq")
+        instruction=_build_group_context()
+        text, _ = await call_llm([{"role":"system","content":instruction}]+hist, max_tokens=35, channel="qq")
         reply = (text or "").strip()
         if not reply or "PASS" in reply: return
         clean=_REPLY_RE.sub('',_AT_RE.sub('',reply)).strip()
@@ -211,7 +219,6 @@ async def handle_event(data):
     text=_clean_cq(raw) or "(sent a non-text message)"
     save_message("user",f"{llm_name}: {text}",scene=f"group_qq_{gid}",source="qq-group",message_id=mid)
     
-    # 只要被@、被回复、或者任何群友（查无此芽、言雾等）叫了薄销，都必须进评估回复
     needs_eval = is_at or is_reply or ("薄销" in text) or ("老头" in text and uid == OWNER_ID)
     if not needs_eval:
         return
