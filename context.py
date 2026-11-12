@@ -21,7 +21,7 @@ def register_context_provider(provider:ContextProvider):
     if provider not in _PROVIDERS:_PROVIDERS.append(provider)
 
 def unregister_context_provider(provider:ContextProvider):
-    if provider not in _PROVIDERS:_PROVIDERS.remove(provider)
+    if provider in _PROVIDERS:_PROVIDERS.remove(provider)
 
 
 def _base_prompt():
@@ -47,7 +47,7 @@ def _persona():
 
 
 def _memories():
-    rows=get("memories","memory_layer=in.(core,current,long_term)&order=importance.desc&limit=20&select=content,memory_layer,importance,tags")
+    rows=get("memories","memory_layer=in.(core,current,long_term)&order=importance.desc&limit=32&select=content,memory_layer,importance,tags")
     if not rows:return ""
     return "【Layered memory】\n"+"\n".join(f"- [{r.get('memory_layer')}|{r.get('importance',3)}] {r.get('content','')}" for r in rows)
 
