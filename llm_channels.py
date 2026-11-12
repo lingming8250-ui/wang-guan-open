@@ -9,6 +9,8 @@ Resolution order:
 3. public MiniApp/runtime active provider for chat
 4. generic LLM_* environment variables for chat
 5. non-chat channels fall back to resolved chat config
+
+qq 通道额外支持运行时模型覆盖（bot_settings.qq_model_override），改模型不用重新部署。
 """
 from __future__ import annotations
 import os, threading, time, logging, requests
@@ -111,6 +113,20 @@ def _supabase_config(channel: str) -> dict | None:
         return None
 
 
+def _apply_overrides(channel: str, cfg: dict) -> dict:
+    """qq 通道允许用 bot_settings 覆盖模型，改完不用重新部署。"""
+    if channel != "qq":
+        return cfg
+    try:
+        from storage import get_setting
+        override = (get_setting("qq_model_override") or "").strip()
+        if override and override != cfg.get("model"):
+            return {**cfg, "model": override, "model_override": True}
+    except Exception:
+        pass
+    return cfg
+
+
 def get_config(channel: str = "chat") -> dict:
     if channel not in CHANNEL_COLUMNS:
         raise ValueError(f"Unknown LLM channel: {channel}")
@@ -133,6 +149,7 @@ def get_config(channel: str = "chat") -> dict:
             cfg = get_config("chat")
             cfg = {**cfg, "channel": channel}
 
+        cfg = _apply_overrides(channel, cfg)
         _CACHE[channel] = (time.time(), cfg)
         return cfg
 
