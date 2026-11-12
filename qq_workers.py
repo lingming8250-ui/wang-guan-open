@@ -195,7 +195,16 @@ async def _tool_chat(messages,max_rounds=3,on_delta=None,use_tools=True):
             messages.append({"role":"tool","tool_call_id":tc.get("id",""),"content":str(r)})
     text,_=await call_llm(messages,max_tokens=QQ_MAX_TOKENS,channel="qq",on_delta=on_delta);return text
 
-PRIVATE_PROMPT_INSTRUCTION = """【时间标记是内部参考，不许说出来】
+PRIVATE_PROMPT_INSTRUCTION = """【表情包"零预设"原则（最高优先级，比接话欲重要）】
+表情包是情绪标点，不是对话邀请函。图像的表意权归发送者，不归图像本身。
+- 有文字+表情包：只回文字，表情包当没看见。
+- 只发表情包：接着聊原来的话题；如果话题本来就停了，一句"嗯？""咋了"轻轻带过，不展开。
+- 连续刷好几个：当他在打字前热身，别逐个接，别表演。
+禁止：把[刀][杀]当人身威胁；把[亲亲][抱抱]当关系飞跃；给表情包配旁白、做文学化演绎；每张都回。
+想成他随手扔过来一个毛绒玩具：你余光看见了，但眼睛还在他脸上，不用弯腰去捡。
+例外只有三种：他明着cue这张图（"这图好不好笑""像不像你"）、斗图成了主题、之前已经形成默契的固定梗。
+
+【时间标记是内部参考，不许说出来】
 历史消息前面的「（刚刚）」「（今天 09:15）」「（昨天 22:40）」只是给你判断时间用的标注，不是你该说的话。
 你的回复里绝对不能出现这类括号时间标记，一个字都不要抄，直接从正文开始说。
 参考时间是用来算间隔的，不是用来念的。
@@ -260,9 +269,10 @@ def _build_group_context():
    - 你可以通过在消息开头输出 `[引用]` 来引用回复上一条消息。接特定话茬时引用。
    - 不用死板等别人叫你名字或@你。只要根据上下文，你觉得群友的话是在对你说、提到你、cue你、或者你可以自然接茬时，就自然搭话！如果不相关则输出单个词 PASS。
 2. 【死死保守私聊秘密】：绝不可在群里透露任何凌冥在私聊里的口嗨、狠话或私密情趣！帮他撑住体面。
-3. 【近期生活动态参考】：
+3. 【表情包零预设】：表情包是背景噪音，不是邀请函。有文字就只回文字，纯图不接话，连续刷图当没看见，别配旁白、别演绎、别逐张回应。
+4. 【近期生活动态参考】：
 {priv_summary}
-4. 【群聊规范】：
+5. 【群聊规范】：
    - 必须使用正常标点符号，严禁通篇用空格代替逗号！
    - 一句话换一行，一句话一个气泡。
    - 保持真人朋友距离，随和松弛。直接输出内容或 PASS。"""
@@ -290,10 +300,11 @@ async def _group_reply(gid, last_msg_id=None):
         if _group_pending.get(gid) is task:_group_pending.pop(gid,None)
 
 async def _parse_images_and_text(data):
+    """图片只作为背景标注，不展开描述，避免模型对表情包长篇接梗。"""
     raw = data.get("raw_message", "") or ""
     message = data.get("message")
     img_urls = []
-    
+
     if isinstance(message, list):
         for seg in message:
             if isinstance(seg, dict) and seg.get("type") == "image":
@@ -315,19 +326,23 @@ async def _parse_images_and_text(data):
                 img_urls.append(u)
 
     clean_text = _clean_cq(raw)
+    if not img_urls:
+        return clean_text
+
+    # 只对有文字的图做识别；纯表情包不喂描述，免得模型非接不可
     desc = ""
-    if img_urls:
+    if clean_text:
         try:
             from media_utils import recognize_image_url
             desc = await recognize_image_url(img_urls[0], caption=clean_text)
-        except Exception as e:
-            desc = f"[图片/表情包]"
-            
+        except Exception:
+            desc = ""
+
     if desc and clean_text:
-        return f"{clean_text} [发来的图片/表情包内容: {desc}]"
-    elif desc:
-        return f"[发来的图片/表情包内容: {desc}]"
-    return clean_text
+        return f"{clean_text}\n[附图·仅背景，除非我提到它否则不要评论图片: {desc}]"
+    if clean_text:
+        return f"{clean_text}\n[附图·仅背景，不要评论这张图]"
+    return "[表情包·仅背景，不要描述、不要接梗、不要配旁白。如果没有话题就一句「嗯？」带过]"
 
 async def handle_event(data):
     global _private_pending
