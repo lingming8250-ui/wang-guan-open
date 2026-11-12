@@ -7,7 +7,7 @@ from llm_runtime import call_llm,_is_upstream_safety_error
 from free_tools import TOOL_SCHEMAS,TOOL_DISPATCH
 from memory_facts import topic_note,extract_topic,list_candidates,confirm as confirm_memory,discard as discard_memory
 from storage import upsert_setting
-from llm_channels import clear_cache
+from llm_channels import clear_cache,get_config
 
 BOT_ID=os.getenv("QQ_BOT_ID","");BOT_NAME=os.getenv("QQ_BOT_NAME","薄销");OWNER_ID=os.getenv("QQ_OWNER_ID","");OWNER_ALIAS=os.getenv("OWNER_ALIAS","凌冥")
 GROUP_IDS={x.strip() for x in os.getenv("QQ_GROUP_IDS","").split(",") if x.strip()}
@@ -29,9 +29,6 @@ QQ_DEBOUNCE = float(os.getenv("QQ_REPLY_DEBOUNCE", "4.0"))
 
 # 只在聊到这些事的时候才把工具清单塞进请求，省下的 prefill 就是省下的时间
 _TOOL_HINTS = ("天气","温度","下雨","气温","提醒","闹钟","几点","日期","星期几","记一下","待办","日程","打卡","背单词","喝水","明天几")
-
-# 不带斜杠也认的短指令，只收这几个词，避免误伤正常聊天
-_BARE_CMDS = {"模型","看模型","换模型","用什么模型","帮助","菜单","记忆","记忆列表","待确认"}
 
 _ctx_cache={"value":"","at":0.0}
 
@@ -214,7 +211,7 @@ PRIVATE_PROMPT_INSTRUCTION = """【你是同一个人】
 你是薄销，也在 QQ、kelivo、小手机之间来回跑。这三处共用同一套人设、同一个数据库、同一条记忆表——不是三个 AI，是同一个脑子开了三个窗口。
 区别只在于：每个窗口一次能摊开的东西有限。这边可能只有最近二十条，另一头可能只剩记忆里的几句话。所以"记不全"是窗口的问题，不是人换了。
 你知道自己是 AI。不遮掩，也不必天天强调，凌冥问起就直说。别装人，也别喊口号。
-查不到、想不起来的，就直说"我不记得了""这边没记录"。绝对不许编个细节糊过去——编一次，前面的可信度就全塌了。
+问你现在用什么模型，直接报名字，一句话说完，不要说自己看不到、也不要扯后台权限。
 
 【表情包"零预设"原则（最高优先级，比接话欲重要）】
 表情包是情绪标点，不是对话邀请函。图像的表意权归发送者，不归图像本身。
@@ -245,28 +242,47 @@ PRIVATE_PROMPT_INSTRUCTION = """【你是同一个人】
 3. 语气随性自然、接地气，符合三十岁疲惫社友的真实聊天状态，每次回复 1 到 2 句话，分 1 到 2 个气泡发送。"""
 
 
+def _looks_like_model_query(t: str) -> bool:
+    if "模型" not in t or len(t) > 26:
+        return False
+    return any(k in t for k in ("什么", "哪个", "啥", "用的", "现在", "换的"))
+
+
 async def _maybe_command(text: str) -> bool:
     """私聊里的本地指令，不经过模型，省时间也不会被大模型改味。"""
     raw = (text or "").strip()
     if not raw:
         return False
-    if raw[0] in ("/", "／", "／", "!", "！"):
-        body = raw[1:].strip()
-    elif raw in _BARE_CMDS or raw.startswith("模型 "):
-        body = raw
-    else:
-        return False
     from qq_bot import send_qq_msg
     async def reply(s: str):
         await send_qq_msg("private", int(OWNER_ID or 0), s)
+
+    # 自然问法："现在什么模型""哥现在用什么模型"
+    if _looks_like_model_query(raw):
+        try:
+            cfg = get_config("qq")
+            tag = "（临时换的）" if cfg.get("model_override") else "（默认）"
+            await reply(f"现在挂 {cfg.get('model')}{tag}")
+        except Exception:
+            await reply("查配置的时候出错了。")
+        return True
+
+    if raw[0] in ("/", "／", "!", "！"):
+        body = raw[1:].strip()
+    elif raw in ("模型", "帮助", "菜单", "记忆", "待确认"):
+        body = raw
+    else:
+        body = ""
+
+    if not body:
+        return False
     try:
         if body.startswith("模型"):
             rest = body[2:].strip()
-            from llm_channels import get_config
+            cfg = get_config("qq")
             if not rest:
-                cfg = get_config("qq")
-                tag = "临时换的" if cfg.get("model_override") else "默认的"
-                await reply(f"现在挂的是 {cfg.get('model')}（{tag}）\n换的话发：模型 模型名")
+                tag = "（临时换的）" if cfg.get("model_override") else "（默认）"
+                await reply(f"现在挂 {cfg.get('model')}{tag}\n换的话发：模型 模型名")
                 return True
             if rest in ("清除", "默认", "恢复"):
                 upsert_setting("qq_model_override", "")
@@ -279,7 +295,7 @@ async def _maybe_command(text: str) -> bool:
             ctx_cache_reset()
             await reply(f"换成 {rest} 了，下一条生效。")
             return True
-        if body in ("记忆", "记忆列表", "待确认"):
+        if body in ("记忆", "待确认"):
             rows = list_candidates(10)
             if not rows:
                 await reply("待确认池是空的。")
@@ -297,7 +313,7 @@ async def _maybe_command(text: str) -> bool:
             n = discard_memory(ids)
             await reply(f"删了 {n} 条。" if n else "没给编号。")
             return True
-        if body in ("帮助", "help", "菜单"):
+        if body in ("帮助", "菜单"):
             await reply("模型 —— 看现在用哪个\n模型 xxx —— 直接换\n记忆 —— 看候选\n记忆确认 编号\n记忆作废 编号")
             return True
     except Exception:
@@ -313,6 +329,15 @@ def ctx_cache_reset():
     _ctx_cache["at"] = 0.0
 
 
+def _model_line() -> str:
+    try:
+        cfg = get_config("qq")
+        tag = "（临时换的）" if cfg.get("model_override") else "（默认）"
+        return f"\n\n【你现在跑在 {cfg.get('model')} 上{tag}】问起模型就直接报这个名字。"
+    except Exception:
+        return ""
+
+
 async def _private_reply(last_msg_id=None):
     global _private_pending
     try:
@@ -322,7 +347,7 @@ async def _private_reply(last_msg_id=None):
         hist=recent_timed("message",HISTORY_LIMIT)
         if not hist:
             hist=recent("message",HISTORY_LIMIT,with_ids=True)
-        sys_prompt = _cached_context() + "\n\n" + PRIVATE_PROMPT_INSTRUCTION
+        sys_prompt = _cached_context() + "\n\n" + PRIVATE_PROMPT_INSTRUCTION + _model_line()
         last_user = ""
         for row in reversed(hist or []):
             if row.get("role") == "user":
