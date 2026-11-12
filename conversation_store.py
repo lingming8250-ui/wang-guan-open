@@ -1,6 +1,7 @@
 """Conversation persistence shared by API, Telegram, QQ and WeChat adapters."""
 from __future__ import annotations
 import re
+from collections import deque
 from datetime import datetime, timezone
 from storage import get, insert
 
@@ -13,6 +14,9 @@ except Exception:
 
 # 之前版本把时间戳写进了正文，历史里残留的这类括号要洗掉，否则模型会一直学样
 _TIME_TAG_RE = re.compile(r'^\s*[（(]\s*(?:刚刚|今天|昨天|前天|\d+\s*分钟前|\d+\s*小时前|\d+\s*月\d+\s*日|\d{4}年)[^）)]*[）)]\s*')
+
+# 重连补取会重复灌同一条消息，这里按 message_id 挡一层
+_SEEN_IDS: deque = deque(maxlen=4000)
 
 
 def _strip_time_tags(s: str) -> str:
@@ -68,6 +72,11 @@ def _ago(ts) -> str:
 
 def save_message(role: str, content: str, *, scene: str = "message", source: str = "", message_id=None):
     if not content: return
+    if message_id is not None:
+        key = str(message_id)
+        if key in _SEEN_IDS:
+            return
+        _SEEN_IDS.append(key)
     body = {"type": scene, "role": role, "content": content}
     if source: body["source"] = source
     if message_id is not None: body["message_id"] = str(message_id)
