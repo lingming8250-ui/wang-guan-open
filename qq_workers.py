@@ -12,6 +12,7 @@ from llm_channels import clear_cache,get_config
 BOT_ID=os.getenv("QQ_BOT_ID","");BOT_NAME=os.getenv("QQ_BOT_NAME","薄销");OWNER_ID=os.getenv("QQ_OWNER_ID","");OWNER_ALIAS=os.getenv("OWNER_ALIAS","凌冥")
 GROUP_IDS={x.strip() for x in os.getenv("QQ_GROUP_IDS","").split(",") if x.strip()}
 _private_pending=None;_group_pending={}
+_LAST_TEXT_TS=0.0
 _REPLY_RE=re.compile(r'\[(?:REPLY|引用|回复)[:：]?\s*(-?\d+)?\]',re.I)
 _AT_RE=re.compile(r'\[(?:AT|艾特)[:：]\s*(\d+)\]',re.I)
 _CQ_RE=re.compile(r'\[CQ:[^\]]+\]')
@@ -26,6 +27,8 @@ HISTORY_LIMIT = int(os.getenv("QQ_HISTORY_LIMIT", "20"))
 CONTEXT_TTL = float(os.getenv("QQ_CONTEXT_TTL", "45"))
 # 等他把话打完：这几秒内再来新消息就取消重排，只回最后那一串
 QQ_DEBOUNCE = float(os.getenv("QQ_REPLY_DEBOUNCE", "4.0"))
+# 纯表情包在这么久之内的对话里保持沉默
+STICKER_SILENCE = float(os.getenv("QQ_STICKER_SILENCE", "600"))
 
 # 只在聊到这些事的时候才把工具清单塞进请求，省下的 prefill 就是省下的时间
 _TOOL_HINTS = ("天气","温度","下雨","气温","提醒","闹钟","几点","日期","星期几","记一下","待办","日程","打卡","背单词","喝水","明天几")
@@ -459,18 +462,47 @@ async def _parse_images_and_text(data):
         return f"{clean_text}\n[附图·仅背景，除非我提到它否则不要评论图片: {desc}]"
     if clean_text:
         return f"{clean_text}\n[附图·仅背景，不要评论这张图]"
-    return "[表情包·仅背景，不要描述、不要接梗、不要配旁白。如果没有话题就一句「嗯？」带过]"
+    return ""
+
+
+def _has_image(data) -> bool:
+    raw = data.get("raw_message", "") or ""
+    if "[CQ:image" in raw:
+        return True
+    msg = data.get("message")
+    if isinstance(msg, list):
+        return any(isinstance(s, dict) and s.get("type") == "image" for s in msg)
+    return False
+
 
 async def handle_event(data):
-    global _private_pending
+    global _private_pending, _LAST_TEXT_TS
     if data.get("post_type")!="message":return
     typ=data.get("message_type","");uid=str(data.get("user_id",""));raw=data.get("raw_message","") or "";mid=data.get("message_id")
     if typ=="private":
         if not OWNER_ID or uid!=OWNER_ID:return
+
+        # 纯表情包：只当背景噪音。不打断正在等的回复，也不另外接一句
+        if _has_image(data) and not _clean_cq(raw):
+            save_message("user","[QQ] [表情包]",scene="message",source="qq",message_id=mid)
+            try:
+                topic_note("message","user","[表情包]")
+            except Exception:
+                pass
+            if _private_pending and not _private_pending.done():
+                return
+            if time.time() - _LAST_TEXT_TS < STICKER_SILENCE:
+                return
+            from qq_bot import send_qq_msg as _send
+            await _send("private", int(OWNER_ID), "嗯？")
+            _LAST_TEXT_TS = time.time()
+            return
+
         text=await _parse_images_and_text(data)
         if not text:return
         if await _maybe_command(text):
             return
+        _LAST_TEXT_TS = time.time()
         save_message("user",f"[QQ] {text}",scene="message",source="qq",message_id=mid)
         try:
             closed=topic_note("message","user",f"[QQ] {text}")
