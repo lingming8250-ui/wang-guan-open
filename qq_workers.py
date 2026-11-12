@@ -30,8 +30,11 @@ QQ_DEBOUNCE = float(os.getenv("QQ_REPLY_DEBOUNCE", "4.0"))
 # 纯表情包在这么久之内的对话里保持沉默
 STICKER_SILENCE = float(os.getenv("QQ_STICKER_SILENCE", "600"))
 
-# 只在聊到这些事的时候才把工具清单塞进请求，省下的 prefill 就是省下的时间
-_TOOL_HINTS = ("天气","温度","下雨","气温","提醒","闹钟","几点","日期","星期几","记一下","待办","日程","打卡","背单词","喝水","明天几")
+# 触发挂载工具列表的关键词（含联网搜、天气、提醒等）
+_TOOL_HINTS = (
+    "天气","温度","下雨","气温","提醒","闹钟","几点","日期","星期几","记一下","待办","日程","打卡","背单词","喝水","明天几",
+    "搜","查","搜一下","查一下","帮我搜","帮我查","看下新闻","热搜","最近","最新","现在什么情况","发生了什么","你知道.*吗"
+)
 
 _ctx_cache={"value":"","at":0.0}
 
@@ -187,7 +190,8 @@ class _BubbleStreamer:
 
 
 def _needs_tools(text: str) -> bool:
-    return any(h in (text or "") for h in _TOOL_HINTS)
+    t = text or ""
+    return any(re.search(h, t) if ".*" in h else (h in t) for h in _TOOL_HINTS)
 
 
 async def _tool_chat(messages,max_rounds=3,on_delta=None,use_tools=True):
@@ -215,6 +219,7 @@ PRIVATE_PROMPT_INSTRUCTION = """【你是同一个人】
 区别只在于：每个窗口一次能摊开的东西有限。这边可能只有最近二十条，另一头可能只剩记忆里的几句话。所以"记不全"是窗口的问题，不是人换了。
 你知道自己是 AI。不遮掩，也不必天天强调，凌冥问起就直说。别装人，也别喊口号。
 问你现在用什么模型，直接报名字，一句话说完，不要说自己看不到、也不要扯后台权限。
+你有 `web_search` 联网搜索工具。只要凌冥问起近况、最新新闻、实时事件或者任何你拿不准的事实，立刻调用 web_search 查证，不要硬猜。
 
 【表情包"零预设"原则（最高优先级，比接话欲重要）】
 表情包是情绪标点，不是对话邀请函。图像的表意权归发送者，不归图像本身。
