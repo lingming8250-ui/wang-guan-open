@@ -13,6 +13,8 @@ _REPLY_RE=re.compile(r'\[(?:REPLY|引用|回复)[:：]?\s*(-?\d+)?\]',re.I)
 _AT_RE=re.compile(r'\[(?:AT|艾特)[:：]\s*(\d+)\]',re.I)
 _CQ_RE=re.compile(r'\[CQ:[^\]]+\]')
 _STREAM_END=re.compile(r'[。！？!?…~\n]')
+# 历史里贴的时间标记，模型会照着念，出口必须剥掉
+_TIME_TAG_RE=re.compile(r'^\s*[（(]\s*(?:刚刚|今天|昨天|前天|\d+\s*分钟前|\d+\s*小时前|\d+\s*月\d+\s*日|\d{4}年)[^）)]*[）)]\s*')
 
 MIN_BUBBLES = 1
 MAX_BUBBLES = 5
@@ -38,6 +40,14 @@ def _cached_context():
     return v
 
 def _clean_cq(s):return _CQ_RE.sub('',s or '').strip()
+
+def _strip_time_tags(s: str) -> str:
+    s = s or ""
+    while True:
+        n = _TIME_TAG_RE.sub('', s, count=1)
+        if n == s:
+            return s
+        s = n
 
 def _segments(text, fallback_reply_id=None):
     reply_id = None
@@ -103,10 +113,11 @@ class _BubbleStreamer:
         self.dead = False
 
     def _prepare(self, chunk):
-        text = _clean_cq(_AT_RE.sub('', _REPLY_RE.sub('', chunk))).strip()
+        text = _clean_cq(_AT_RE.sub('', _REPLY_RE.sub('', chunk)))
+        text = _strip_time_tags(text).strip()
         if not text:
             return None
-        seg = _segments(chunk)
+        seg = _segments(_strip_time_tags(chunk))
         return text, seg
 
     async def _push(self, chunk):
@@ -124,6 +135,9 @@ class _BubbleStreamer:
         if self.dead:
             return
         self.buf += delta
+        # 开头可能是时间标记，先攒够字符再判断，别把半个括号发出去
+        if self.sent == 0 and len(self.buf) < 8 and not _STREAM_END.search(self.buf):
+            return
         # 思考标签没闭合前不发
         if "<think" in self.buf and "</think>" not in self.buf:
             return
@@ -181,8 +195,13 @@ async def _tool_chat(messages,max_rounds=3,on_delta=None,use_tools=True):
             messages.append({"role":"tool","tool_call_id":tc.get("id",""),"content":str(r)})
     text,_=await call_llm(messages,max_tokens=QQ_MAX_TOKENS,channel="qq",on_delta=on_delta);return text
 
-PRIVATE_PROMPT_INSTRUCTION = """【时间感铁律】
-每条历史消息前面括号里是它真实发生的时间：写着「（刚刚）」「（25分钟前 13:40）」的是刚聊的，写着「（今天 09:15）」「（昨天 22:40）」「（11月3日 18:20）」的是更早的。配合系统给你的当前时间算清楚间隔。
+PRIVATE_PROMPT_INSTRUCTION = """【时间标记是内部参考，不许说出来】
+历史消息前面的「（刚刚）」「（今天 09:15）」「（昨天 22:40）」只是给你判断时间用的标注，不是你该说的话。
+你的回复里绝对不能出现这类括号时间标记，一个字都不要抄，直接从正文开始说。
+参考时间是用来算间隔的，不是用来念的。
+
+【时间感铁律】
+每条历史消息前面括号里是它真实发生的时间。配合系统给你的当前时间算清楚间隔。
 别把几小时前、昨天、前好几天的事说成「刚才」「刚吃完」，也别把刚刚发生的事当成老早以前。
 超过一周的事只记得个大概就直说记不太清，别硬编细节。
 
