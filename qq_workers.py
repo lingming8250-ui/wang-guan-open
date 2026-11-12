@@ -1,6 +1,6 @@
 """Generic QQ message worker. Keeps owner restrictions, group PASS and real reply/@ tags."""
 from __future__ import annotations
-import os,asyncio,json,random,re
+import os,asyncio,json,random,re,time
 from context import build_context
 from conversation_store import save_message,recent,recent_private
 from llm_runtime import call_llm,_is_upstream_safety_error
@@ -16,6 +16,26 @@ _STREAM_END=re.compile(r'[。！？!?…~\n]')
 
 MIN_BUBBLES = 1
 MAX_BUBBLES = 5
+QQ_MAX_TOKENS = int(os.getenv("QQ_MAX_TOKENS", "700"))
+HISTORY_LIMIT = int(os.getenv("QQ_HISTORY_LIMIT", "14"))
+CONTEXT_TTL = float(os.getenv("QQ_CONTEXT_TTL", "45"))
+
+# 只在聊到这些事的时候才把工具清单塞进请求，省下的 prefill 就是省下的时间
+_TOOL_HINTS = ("天气","温度","下雨","气温","提醒","闹钟","几点","日期","星期几","记一下","待办","日程","打卡","背单词","喝水","明天几")
+
+_ctx_cache={"value":"","at":0.0}
+
+def _cached_context():
+    now=time.time()
+    if _ctx_cache["value"] and now-_ctx_cache["at"]<CONTEXT_TTL:
+        return _ctx_cache["value"]
+    try:
+        v=build_context()
+    except Exception:
+        v=_ctx_cache["value"]
+    if v:
+        _ctx_cache["value"]=v;_ctx_cache["at"]=now
+    return v
 
 def _clean_cq(s):return _CQ_RE.sub('',s or '').strip()
 
@@ -70,7 +90,7 @@ def _split_into_bubbles(text: str, max_b: int = MAX_BUBBLES) -> list[str]:
 class _BubbleStreamer:
     """边生成边发：凑够一句就发一个气泡，剩下的收尾时补。"""
 
-    def __init__(self, send_fn, scene: str, scope: str, target: int, max_b: int = 4, gap: float = 0.7):
+    def __init__(self, send_fn, scene: str, scope: str, target: int, max_b: int = 4, gap: float = 0.45):
         self.send_fn = send_fn
         self.scene = scene
         self.scope = scope
@@ -134,12 +154,19 @@ class _BubbleStreamer:
             chunks = []
         for i, chunk in enumerate(chunks):
             if await self._push(chunk) and i < len(chunks) - 1:
-                await asyncio.sleep(max(0.5, min(1.2, len(chunk) * 0.05 + 0.4)))
+                await asyncio.sleep(max(0.35, min(0.9, len(chunk) * 0.04 + 0.3)))
 
 
-async def _tool_chat(messages,max_rounds=3,on_delta=None):
+def _needs_tools(text: str) -> bool:
+    return any(h in (text or "") for h in _TOOL_HINTS)
+
+
+async def _tool_chat(messages,max_rounds=3,on_delta=None,use_tools=True):
+    if not use_tools:
+        text,_=await call_llm(messages,max_tokens=QQ_MAX_TOKENS,channel="qq",on_delta=on_delta)
+        return text
     for _ in range(max_rounds):
-        text,calls=await call_llm(messages,tools=TOOL_SCHEMAS,channel="qq",on_delta=on_delta)
+        text,calls=await call_llm(messages,max_tokens=QQ_MAX_TOKENS,tools=TOOL_SCHEMAS,channel="qq",on_delta=on_delta)
         if not calls:return text
         a={"role":"assistant","tool_calls":calls};
         if text:a["content"]=text
@@ -152,7 +179,7 @@ async def _tool_chat(messages,max_rounds=3,on_delta=None):
             try:r=await asyncio.to_thread(h,args) if h else f"Unknown tool: {name}"
             except Exception as exc:r=f"Tool failed: {type(exc).__name__}"
             messages.append({"role":"tool","tool_call_id":tc.get("id",""),"content":str(r)})
-    text,_=await call_llm(messages,channel="qq",on_delta=on_delta);return text
+    text,_=await call_llm(messages,max_tokens=QQ_MAX_TOKENS,channel="qq",on_delta=on_delta);return text
 
 PRIVATE_PROMPT_INSTRUCTION = """【标点与分气泡铁律（严格执行凌冥要求）】
 1. 【必须使用正常标点符号】：严禁用空格代替逗号或句号！句子该用逗号用逗号，该用问号用问号，语气词该加逗号加逗号。
@@ -166,11 +193,18 @@ PRIVATE_PROMPT_INSTRUCTION = """【标点与分气泡铁律（严格执行凌冥
 async def _private_reply(last_msg_id=None):
     global _private_pending
     try:
-        await asyncio.sleep(random.uniform(0.3,0.7));from qq_bot import send_qq_msg
-        hist=recent("message",30,with_ids=True)
-        sys_prompt = build_context() + "\n\n" + PRIVATE_PROMPT_INSTRUCTION
+        await asyncio.sleep(random.uniform(0.15,0.4));from qq_bot import send_qq_msg
+        hist=recent("message",HISTORY_LIMIT,with_ids=True)
+        sys_prompt = _cached_context() + "\n\n" + PRIVATE_PROMPT_INSTRUCTION
+        last_user = ""
+        for row in reversed(hist or []):
+            if row.get("role") == "user":
+                last_user = str(row.get("content") or "")
+                break
         streamer=_BubbleStreamer(send_qq_msg,"message","private",int(OWNER_ID or 0),max_b=4)
-        reply=(await _tool_chat([{"role":"system","content":sys_prompt}]+hist,on_delta=streamer.feed)).strip()
+        reply=(await _tool_chat([{"role":"system","content":sys_prompt}]+hist,
+                                on_delta=streamer.feed,
+                                use_tools=_needs_tools(last_user))).strip()
         if not reply and streamer.sent==0:return
         if reply and streamer.sent==0:
             # 首气泡带引用回复
@@ -210,7 +244,7 @@ def _build_group_context():
 async def _group_reply(gid, last_msg_id=None):
     task=asyncio.current_task()
     try:
-        await asyncio.sleep(random.uniform(1.0,2.0));from qq_bot import send_qq_msg
+        await asyncio.sleep(random.uniform(0.6,1.2));from qq_bot import send_qq_msg
         scene=f"group_qq_{gid}";hist=recent(scene,15,with_ids=True)
         instruction=_build_group_context()
         text, _ = await call_llm([{"role":"system","content":instruction}]+hist, max_tokens=65, channel="qq")
@@ -224,7 +258,7 @@ async def _group_reply(gid, last_msg_id=None):
                 seg_payload = _segments(reply if i==0 and _REPLY_RE.search(reply) else chunk, fallback_reply_id=last_msg_id if i==0 and _REPLY_RE.search(reply) else None)
                 await send_qq_msg("group", int(gid), seg_payload)
                 if i < len(chunks) - 1:
-                    await asyncio.sleep(random.uniform(1.2, 2.0))
+                    await asyncio.sleep(random.uniform(0.8, 1.4))
     except asyncio.CancelledError:pass
     finally:
         if _group_pending.get(gid) is task:_group_pending.pop(gid,None)
