@@ -30,6 +30,9 @@ QQ_DEBOUNCE = float(os.getenv("QQ_REPLY_DEBOUNCE", "4.0"))
 # 只在聊到这些事的时候才把工具清单塞进请求，省下的 prefill 就是省下的时间
 _TOOL_HINTS = ("天气","温度","下雨","气温","提醒","闹钟","几点","日期","星期几","记一下","待办","日程","打卡","背单词","喝水","明天几")
 
+# 不带斜杠也认的短指令，只收这几个词，避免误伤正常聊天
+_BARE_CMDS = {"模型","看模型","换模型","用什么模型","帮助","菜单","记忆","记忆列表","待确认"}
+
 _ctx_cache={"value":"","at":0.0}
 
 def _cached_context():
@@ -244,39 +247,26 @@ PRIVATE_PROMPT_INSTRUCTION = """【你是同一个人】
 
 async def _maybe_command(text: str) -> bool:
     """私聊里的本地指令，不经过模型，省时间也不会被大模型改味。"""
-    t = (text or "").strip()
-    if not t or t[0] not in ("/", "／"):
+    raw = (text or "").strip()
+    if not raw:
         return False
-    body = t[1:].strip()
+    if raw[0] in ("/", "／", "／", "!", "！"):
+        body = raw[1:].strip()
+    elif raw in _BARE_CMDS or raw.startswith("模型 "):
+        body = raw
+    else:
+        return False
     from qq_bot import send_qq_msg
     async def reply(s: str):
         await send_qq_msg("private", int(OWNER_ID or 0), s)
     try:
-        if body in ("记忆", "记忆列表", "待确认"):
-            rows = list_candidates(10)
-            if not rows:
-                await reply("没有待确认的记忆。")
-                return True
-            lines = [f"#{r.get('id')} {r.get('content')}" for r in rows]
-            await reply("待确认：\n" + "\n".join(lines) + "\n\n要收：/记忆确认 编号    不要：/记忆作废 编号")
-            return True
-        if body.startswith("记忆确认"):
-            ids = re.findall(r"\d+", body)
-            n = confirm_memory(ids)
-            await reply(f"收了 {n} 条。" if n else "没给编号。")
-            return True
-        if body.startswith("记忆作废") or body.startswith("记忆忘掉"):
-            ids = re.findall(r"\d+", body)
-            n = discard_memory(ids)
-            await reply(f"删了 {n} 条。" if n else "没给编号。")
-            return True
         if body.startswith("模型"):
             rest = body[2:].strip()
+            from llm_channels import get_config
             if not rest:
-                from llm_channels import get_config
                 cfg = get_config("qq")
-                extra = "（临时覆盖）" if cfg.get("model_override") else "（默认）"
-                await reply(f"现在用的 {cfg.get('model')} {extra}")
+                tag = "临时换的" if cfg.get("model_override") else "默认的"
+                await reply(f"现在挂的是 {cfg.get('model')}（{tag}）\n换的话发：模型 模型名")
                 return True
             if rest in ("清除", "默认", "恢复"):
                 upsert_setting("qq_model_override", "")
@@ -289,8 +279,26 @@ async def _maybe_command(text: str) -> bool:
             ctx_cache_reset()
             await reply(f"换成 {rest} 了，下一条生效。")
             return True
+        if body in ("记忆", "记忆列表", "待确认"):
+            rows = list_candidates(10)
+            if not rows:
+                await reply("待确认池是空的。")
+                return True
+            lines = [f"#{r.get('id')} {r.get('content')}" for r in rows]
+            await reply("待确认：\n" + "\n".join(lines) + "\n\n要收：记忆确认 编号    不要：记忆作废 编号")
+            return True
+        if body.startswith("记忆确认"):
+            ids = re.findall(r"\d+", body)
+            n = confirm_memory(ids)
+            await reply(f"收了 {n} 条。" if n else "没给编号。")
+            return True
+        if body.startswith("记忆作废") or body.startswith("记忆忘掉"):
+            ids = re.findall(r"\d+", body)
+            n = discard_memory(ids)
+            await reply(f"删了 {n} 条。" if n else "没给编号。")
+            return True
         if body in ("帮助", "help", "菜单"):
-            await reply("/记忆 看待确认\n/记忆确认 编号\n/记忆作废 编号\n/模型 查看\n/模型 名字 切换")
+            await reply("模型 —— 看现在用哪个\n模型 xxx —— 直接换\n记忆 —— 看候选\n记忆确认 编号\n记忆作废 编号")
             return True
     except Exception:
         import logging
