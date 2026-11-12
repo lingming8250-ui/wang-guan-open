@@ -30,7 +30,8 @@ def _safe_headers(api_key:str, extra_headers:dict|None=None) -> dict:
     return {**custom,"Authorization":f"Bearer {api_key}","Content-Type":"application/json"}
 
 
-async def call_llm(messages:list,max_tokens:int=4096,tools:list|None=None,extra_body:dict|None=None,channel:str="chat") -> tuple[str,list]:
+async def call_llm(messages:list,max_tokens:int=4096,tools:list|None=None,extra_body:dict|None=None,channel:str="chat",on_delta=None) -> tuple[str,list]:
+    """on_delta: 可选异步回调，每收到一段增量文本就 await 一次，用于边流边发。"""
     cfg=get_config(channel)
     if not cfg.get("api_key") or not cfg.get("model"):
         raise RuntimeError(f"LLM channel '{channel}' is not configured")
@@ -59,6 +60,11 @@ async def call_llm(messages:list,max_tokens:int=4096,tools:list|None=None,extra_
                         continue
                     if delta.get("content"):
                         content.append(delta["content"])
+                        if on_delta is not None:
+                            try:
+                                await on_delta(delta["content"])
+                            except Exception:
+                                log.exception("on_delta callback failed channel=%s",channel)
                     for td in delta.get("tool_calls") or []:
                         i=td.get("index",0); e=tc_map.setdefault(i,{"id":"","type":"function","function":{"name":"","arguments":""}})
                         if td.get("id"):e["id"]=td["id"]
