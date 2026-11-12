@@ -3,7 +3,7 @@ from __future__ import annotations
 import os,asyncio,json,random,re
 from context import build_context
 from conversation_store import save_message,recent,recent_private
-from llm_runtime import call_llm
+from llm_runtime import call_llm,_is_upstream_safety_error
 from free_tools import TOOL_SCHEMAS,TOOL_DISPATCH
 
 BOT_ID=os.getenv("QQ_BOT_ID","");BOT_NAME=os.getenv("QQ_BOT_NAME","薄销");OWNER_ID=os.getenv("QQ_OWNER_ID","");OWNER_ALIAS=os.getenv("OWNER_ALIAS","凌冥")
@@ -12,6 +12,7 @@ _private_pending=None;_group_pending={}
 _REPLY_RE=re.compile(r'\[(?:REPLY|引用|回复)[:：]?\s*(-?\d+)?\]',re.I)
 _AT_RE=re.compile(r'\[(?:AT|艾特)[:：]\s*(\d+)\]',re.I)
 _CQ_RE=re.compile(r'\[CQ:[^\]]+\]')
+_STREAM_END=re.compile(r'[。！？!?…~\n]')
 
 MIN_BUBBLES = 1
 MAX_BUBBLES = 5
@@ -65,9 +66,80 @@ def _split_into_bubbles(text: str, max_b: int = MAX_BUBBLES) -> list[str]:
 
     return bubbles
 
-async def _tool_chat(messages,max_rounds=3):
+
+class _BubbleStreamer:
+    """边生成边发：凑够一句就发一个气泡，剩下的收尾时补。"""
+
+    def __init__(self, send_fn, scene: str, scope: str, target: int, max_b: int = 4, gap: float = 0.7):
+        self.send_fn = send_fn
+        self.scene = scene
+        self.scope = scope
+        self.target = target
+        self.max_b = max_b
+        self.gap = gap
+        self.buf = ""
+        self.sent = 0
+        self.first = True
+        self.dead = False
+
+    def _prepare(self, chunk):
+        text = _clean_cq(_AT_RE.sub('', _REPLY_RE.sub('', chunk))).strip()
+        if not text:
+            return None
+        seg = _segments(chunk)
+        return text, seg
+
+    async def _push(self, chunk):
+        got = self._prepare(chunk)
+        if not got:
+            return False
+        text, seg = got
+        save_message("assistant", text, scene=self.scene, source="qq")
+        await self.send_fn(self.scope, self.target, seg)
+        self.sent += 1
+        self.first = False
+        return True
+
+    async def feed(self, delta: str):
+        if self.dead:
+            return
+        self.buf += delta
+        # 思考标签没闭合前不发
+        if "<think" in self.buf and "</think>" not in self.buf:
+            return
+        if _is_upstream_safety_error(self.buf):
+            self.dead = True
+            return
+        while self.sent < self.max_b:
+            m = _STREAM_END.search(self.buf)
+            if not m:
+                break
+            chunk = self.buf[:m.end()]
+            self.buf = self.buf[m.end():]
+            if len(chunk.strip()) < 2:
+                continue
+            if await self._push(chunk) and self.sent < self.max_b:
+                await asyncio.sleep(self.gap)
+
+    async def flush(self, full_text: str):
+        if self.dead or self.sent >= self.max_b:
+            return
+        rest = self.buf
+        self.buf = ""
+        if self.sent == 0:
+            chunks = _split_into_bubbles(full_text or rest, max_b=self.max_b)
+        elif rest.strip():
+            chunks = _split_into_bubbles(rest, max_b=max(1, self.max_b - self.sent))
+        else:
+            chunks = []
+        for i, chunk in enumerate(chunks):
+            if await self._push(chunk) and i < len(chunks) - 1:
+                await asyncio.sleep(max(0.5, min(1.2, len(chunk) * 0.05 + 0.4)))
+
+
+async def _tool_chat(messages,max_rounds=3,on_delta=None):
     for _ in range(max_rounds):
-        text,calls=await call_llm(messages,tools=TOOL_SCHEMAS,channel="qq")
+        text,calls=await call_llm(messages,tools=TOOL_SCHEMAS,channel="qq",on_delta=on_delta)
         if not calls:return text
         a={"role":"assistant","tool_calls":calls};
         if text:a["content"]=text
@@ -80,7 +152,7 @@ async def _tool_chat(messages,max_rounds=3):
             try:r=await asyncio.to_thread(h,args) if h else f"Unknown tool: {name}"
             except Exception as exc:r=f"Tool failed: {type(exc).__name__}"
             messages.append({"role":"tool","tool_call_id":tc.get("id",""),"content":str(r)})
-    text,_=await call_llm(messages,channel="qq");return text
+    text,_=await call_llm(messages,channel="qq",on_delta=on_delta);return text
 
 PRIVATE_PROMPT_INSTRUCTION = """【标点与分气泡铁律（严格执行凌冥要求）】
 1. 【必须使用正常标点符号】：严禁用空格代替逗号或句号！句子该用逗号用逗号，该用问号用问号，语气词该加逗号加逗号。
@@ -94,21 +166,18 @@ PRIVATE_PROMPT_INSTRUCTION = """【标点与分气泡铁律（严格执行凌冥
 async def _private_reply(last_msg_id=None):
     global _private_pending
     try:
-        await asyncio.sleep(random.uniform(0.8,1.6));from qq_bot import send_qq_msg
+        await asyncio.sleep(random.uniform(0.3,0.7));from qq_bot import send_qq_msg
         hist=recent("message",30,with_ids=True)
         sys_prompt = build_context() + "\n\n" + PRIVATE_PROMPT_INSTRUCTION
-        reply=(await _tool_chat([{"role":"system","content":sys_prompt}]+hist)).strip()
-        if not reply:return
-        chunks=_split_into_bubbles(reply, max_b=4)
-        for i,chunk in enumerate(chunks):
-            clean=_REPLY_RE.sub('',_AT_RE.sub('',chunk)).strip()
-            if clean:
-                save_message("assistant",clean,scene="message",source="qq")
-                seg_payload = _segments(chunk, fallback_reply_id=last_msg_id if i==0 and _REPLY_RE.search(chunk) else None)
-                await send_qq_msg("private",int(OWNER_ID),seg_payload)
-                if i<len(chunks)-1:
-                    delay = max(1.2, min(2.8, len(chunk) * 0.1 + 1.0))
-                    await asyncio.sleep(delay)
+        streamer=_BubbleStreamer(send_qq_msg,"message","private",int(OWNER_ID or 0),max_b=4)
+        reply=(await _tool_chat([{"role":"system","content":sys_prompt}]+hist,on_delta=streamer.feed)).strip()
+        if not reply and streamer.sent==0:return
+        if reply and streamer.sent==0:
+            # 首气泡带引用回复
+            first=_REPLY_RE.search(reply)
+            if first and last_msg_id and not first.group(1):
+                reply=_REPLY_RE.sub(f"[REPLY:{last_msg_id}]",reply,count=1)
+        await streamer.flush(reply)
     except asyncio.CancelledError:pass
     finally:
         if _private_pending is asyncio.current_task():_private_pending=None
