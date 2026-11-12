@@ -1,5 +1,6 @@
 """Conversation persistence shared by API, Telegram, QQ and WeChat adapters."""
 from __future__ import annotations
+import re
 from datetime import datetime, timezone
 from storage import get, insert
 
@@ -9,6 +10,18 @@ try:
     _TZ = ZoneInfo(DEFAULT_TIMEZONE)
 except Exception:
     _TZ = timezone.utc
+
+# 之前版本把时间戳写进了正文，历史里残留的这类括号要洗掉，否则模型会一直学样
+_TIME_TAG_RE = re.compile(r'^\s*[（(]\s*(?:刚刚|今天|昨天|前天|\d+\s*分钟前|\d+\s*小时前|\d+\s*月\d+\s*日|\d{4}年)[^）)]*[）)]\s*')
+
+
+def _strip_time_tags(s: str) -> str:
+    s = s or ""
+    while True:
+        n = _TIME_TAG_RE.sub('', s, count=1)
+        if n == s:
+            return s
+        s = n
 
 
 def _ago(ts) -> str:
@@ -74,8 +87,8 @@ def recent(scene: str = "message", limit: int = 30, with_ids: bool = False) -> l
     return out
 
 
-def recent_timed(scene: str = "message", limit: int = 14) -> list:
-    """带相对时间+绝对日期标记的历史，模型才知道哪句是刚才说的、哪句是哪天的。"""
+def recent_timed(scene: str = "message", limit: int = 20) -> list:
+    """只有用户消息带时间标记；助手说过的话把残留标记洗掉，避免模型照抄格式。"""
     base = f"type=eq.{scene}&order=seq.desc&limit={max(1,min(limit,100))}"
     rows = None
     try:
@@ -90,14 +103,18 @@ def recent_timed(scene: str = "message", limit: int = 14) -> list:
     rows.reverse()
     out=[]
     for r in rows:
-        content=r.get("content","")
-        mid=r.get("message_id")
+        role = r.get("role","user")
+        content = r.get("content","") or ""
+        mid = r.get("message_id")
         if mid is not None:
             content=f"[id:{mid}] {content}"
-        stamp=_ago(r.get("created_at"))
-        if stamp:
-            content=f"{stamp} {content}"
-        out.append({"role":r.get("role","user"),"content":content})
+        if role == "user":
+            stamp=_ago(r.get("created_at"))
+            if stamp:
+                content=f"{stamp} {content}"
+        else:
+            content=_strip_time_tags(content)
+        out.append({"role":role,"content":content})
     return out
 
 
