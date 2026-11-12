@@ -2,7 +2,7 @@
 from __future__ import annotations
 import os,asyncio,json,random,re,time
 from context import build_context
-from conversation_store import save_message,recent,recent_private
+from conversation_store import save_message,recent,recent_private,recent_timed
 from llm_runtime import call_llm,_is_upstream_safety_error
 from free_tools import TOOL_SCHEMAS,TOOL_DISPATCH
 
@@ -181,7 +181,10 @@ async def _tool_chat(messages,max_rounds=3,on_delta=None,use_tools=True):
             messages.append({"role":"tool","tool_call_id":tc.get("id",""),"content":str(r)})
     text,_=await call_llm(messages,max_tokens=QQ_MAX_TOKENS,channel="qq",on_delta=on_delta);return text
 
-PRIVATE_PROMPT_INSTRUCTION = """【标点与分气泡铁律（严格执行凌冥要求）】
+PRIVATE_PROMPT_INSTRUCTION = """【时间感铁律】
+历史消息前面带的「（3小时前）」「（昨天）」「（刚刚）」就是真实发生时间，配合系统给的当前时间判断。别把几小时前、昨天的事说成「刚才」，也别把刚发生的事说成老早以前。
+
+【标点与分气泡铁律（严格执行凌冥要求）】
 1. 【必须使用正常标点符号】：严禁用空格代替逗号或句号！句子该用逗号用逗号，该用问号用问号，语气词该加逗号加逗号。
 2. 【一句话一个气泡】：想发多句话，每句话必须独占一行（直接敲回车换行），不要把两句长话黏在同一个气泡里！
 示例：
@@ -194,7 +197,9 @@ async def _private_reply(last_msg_id=None):
     global _private_pending
     try:
         await asyncio.sleep(random.uniform(0.15,0.4));from qq_bot import send_qq_msg
-        hist=recent("message",HISTORY_LIMIT,with_ids=True)
+        hist=recent_timed("message",HISTORY_LIMIT)
+        if not hist:
+            hist=recent("message",HISTORY_LIMIT,with_ids=True)
         sys_prompt = _cached_context() + "\n\n" + PRIVATE_PROMPT_INSTRUCTION
         last_user = ""
         for row in reversed(hist or []):
