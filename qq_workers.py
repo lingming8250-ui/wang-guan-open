@@ -24,6 +24,8 @@ MAX_BUBBLES = 5
 QQ_MAX_TOKENS = int(os.getenv("QQ_MAX_TOKENS", "700"))
 HISTORY_LIMIT = int(os.getenv("QQ_HISTORY_LIMIT", "20"))
 CONTEXT_TTL = float(os.getenv("QQ_CONTEXT_TTL", "45"))
+# 等他把话打完：这几秒内再来新消息就取消重排，只回最后那一串
+QQ_DEBOUNCE = float(os.getenv("QQ_REPLY_DEBOUNCE", "4.0"))
 
 # 只在聊到这些事的时候才把工具清单塞进请求，省下的 prefill 就是省下的时间
 _TOOL_HINTS = ("天气","温度","下雨","气温","提醒","闹钟","几点","日期","星期几","记一下","待办","日程","打卡","背单词","喝水","明天几")
@@ -273,7 +275,8 @@ async def _maybe_command(text: str) -> bool:
             if not rest:
                 from llm_channels import get_config
                 cfg = get_config("qq")
-                await reply(f"现在用的 {cfg.get('model')}")
+                extra = "（临时覆盖）" if cfg.get("model_override") else "（默认）"
+                await reply(f"现在用的 {cfg.get('model')} {extra}")
                 return True
             if rest in ("清除", "默认", "恢复"):
                 upsert_setting("qq_model_override", "")
@@ -305,7 +308,9 @@ def ctx_cache_reset():
 async def _private_reply(last_msg_id=None):
     global _private_pending
     try:
-        await asyncio.sleep(random.uniform(0.15,0.4));from qq_bot import send_qq_msg
+        # 等他打完。这几秒里只要又来新消息，这个任务会被取消，重新计时
+        await asyncio.sleep(QQ_DEBOUNCE + random.uniform(0, 0.6))
+        from qq_bot import send_qq_msg
         hist=recent_timed("message",HISTORY_LIMIT)
         if not hist:
             hist=recent("message",HISTORY_LIMIT,with_ids=True)
