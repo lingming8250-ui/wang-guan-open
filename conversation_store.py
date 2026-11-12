@@ -3,22 +3,36 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from storage import get, insert
 
+try:
+    from zoneinfo import ZoneInfo
+    from app_config import DEFAULT_TIMEZONE
+    _TZ = ZoneInfo(DEFAULT_TIMEZONE)
+except Exception:
+    _TZ = timezone.utc
+
 
 def _ago(ts) -> str:
-    """把 UTC 时间戳转成「多久之前」，让模型能分清刚才和几小时前。"""
+    """把 UTC 时间戳转成「多久之前 + 具体几点几号」，让模型分得清刚才和上个月。"""
     if not ts:
         return ""
     try:
         s = str(ts).replace("Z", "+00:00")
-        if "." in s and "+" in s:
-            head, tail = s.split("+", 1)
-            if "." in head:
-                head = head.split(".")[0]
-            s = head + "+" + tail
+        if "." in s:
+            head, _, tail = s.partition(".")
+            rest = tail
+            for sep in ("+", "-"):
+                if sep in rest:
+                    rest = rest[rest.index(sep):]
+                    break
+            else:
+                rest = ""
+            s = head + rest
         dt = datetime.fromisoformat(s)
         if dt.tzinfo is None:
             dt = dt.replace(tzinfo=timezone.utc)
-        delta = (datetime.now(timezone.utc) - dt).total_seconds()
+        local = dt.astimezone(_TZ)
+        now = datetime.now(_TZ)
+        delta = (now - local).total_seconds()
     except Exception:
         return ""
     if delta < 0:
@@ -26,13 +40,17 @@ def _ago(ts) -> str:
     if delta < 60:
         return "（刚刚）"
     if delta < 3600:
-        return f"（{int(delta // 60)}分钟前）"
-    if delta < 86400:
-        h = int(delta // 3600)
-        m = int((delta % 3600) // 60)
-        return f"（{h}小时前）" if m < 5 else f"（{h}小时{m}分钟前）"
-    d = int(delta // 86400)
-    return "（昨天）" if d == 1 else f"（{d}天前）"
+        return f"（{int(delta // 60)}分钟前 {local:%H:%M}）"
+    days = (now.date() - local.date()).days
+    if days == 0:
+        return f"（今天 {local:%H:%M}）"
+    if days == 1:
+        return f"（昨天 {local:%H:%M}）"
+    if days <= 6:
+        return f"（{local.month}月{local.day}日 星期{'一二三四五六日'[local.weekday()]} {local:%H:%M}）"
+    if local.year == now.year:
+        return f"（{local.month}月{local.day}日 {local:%H:%M}）"
+    return f"（{local.year}年{local.month}月{local.day}日 {local:%H:%M}）"
 
 
 def save_message(role: str, content: str, *, scene: str = "message", source: str = "", message_id=None):
@@ -57,7 +75,7 @@ def recent(scene: str = "message", limit: int = 30, with_ids: bool = False) -> l
 
 
 def recent_timed(scene: str = "message", limit: int = 14) -> list:
-    """带相对时间标记的历史，模型才知道哪句是刚才说的、哪句是几小时前的。"""
+    """带相对时间+绝对日期标记的历史，模型才知道哪句是刚才说的、哪句是哪天的。"""
     base = f"type=eq.{scene}&order=seq.desc&limit={max(1,min(limit,100))}"
     rows = None
     try:
