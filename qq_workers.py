@@ -230,6 +230,9 @@ PRIVATE_PROMPT_INSTRUCTION = """【你是同一个人】
 想成他随手扔过来一个毛绒玩具：你余光看见了，但眼睛还在他脸上，不用弯腰去捡。
 例外只有三种：他明着cue这张图（"这图好不好笑""像不像你"）、斗图成了主题、之前已经形成默契的固定梗。
 
+【图片与截图阅读说明】
+凌冥发来商品截图、网页截图、照片时，后台会自动解析出图片里的文字和商品信息（如 [附图内容: ...]），你必须仔细阅读这些信息并自然回应他，绝对严禁回答「我看不到图片」「接口看不到你甩过来的图片」「图没刷出来」！
+
 【时间标记是内部参考，不许说出来】
 历史消息前面的「（刚刚）」「（今天 09:15）」「（昨天 22:40）」只是给你判断时间用的标注，不是你该说的话。
 你的回复里绝对不能出现这类括号时间标记，一个字都不要抄，直接从正文开始说。
@@ -425,7 +428,7 @@ async def _group_reply(gid, last_msg_id=None):
         if _group_pending.get(gid) is task:_group_pending.pop(gid,None)
 
 async def _parse_images_and_text(data):
-    """图片只作为背景标注，不展开描述，避免模型对表情包长篇接梗。"""
+    """图片解析：表情包忽略，正常截图/照片调用 Vision 识图后把内容灌进上下文。"""
     raw = data.get("raw_message", "") or ""
     message = data.get("message")
     img_urls = []
@@ -454,19 +457,22 @@ async def _parse_images_and_text(data):
     if not img_urls:
         return clean_text
 
-    # 只对有文字的图做识别；纯表情包不喂描述，免得模型非接不可
     desc = ""
-    if clean_text:
-        try:
-            from media_utils import recognize_image_url
-            desc = await recognize_image_url(img_urls[0], caption=clean_text)
-        except Exception:
-            desc = ""
+    # 只要有图，就尝试用 vision 识图（不管是配了字还是单纯发图问"看到了吗"）
+    try:
+        from media_utils import recognize_image_url
+        desc = await recognize_image_url(img_urls[0], caption=clean_text)
+    except Exception as exc:
+        import logging
+        logging.getLogger(__name__).warning("recognize_image_url failed: %s", exc)
+        desc = ""
 
     if desc and clean_text:
-        return f"{clean_text}\n[附图·仅背景，除非我提到它否则不要评论图片: {desc}]"
-    if clean_text:
-        return f"{clean_text}\n[附图·仅背景，不要评论这张图]"
+        return f"{clean_text}\n[附图内容: {desc}]"
+    elif desc:
+        return f"[发来的附图/商品截图内容: {desc}]"
+    elif clean_text:
+        return clean_text
     return ""
 
 
@@ -487,8 +493,13 @@ async def handle_event(data):
     if typ=="private":
         if not OWNER_ID or uid!=OWNER_ID:return
 
-        # 纯表情包：只当背景噪音。不打断正在等的回复，也不另外接一句
-        if _has_image(data) and not _clean_cq(raw):
+        # 区分纯表情包（subType=1 或特定短表情）与普通大图
+        # 如果既有图片，又完全没文字，且被当作纯表情包
+        # 但如果是大图/照片/商品截图，不能直接吞！
+        text = await _parse_images_and_text(data)
+
+        # 纯表情包（既没有识别出有价值的描述，也没有文字）
+        if _has_image(data) and not _clean_cq(raw) and not text:
             save_message("user","[QQ] [表情包]",scene="message",source="qq",message_id=mid)
             try:
                 topic_note("message","user","[表情包]")
@@ -503,7 +514,6 @@ async def handle_event(data):
             _LAST_TEXT_TS = time.time()
             return
 
-        text=await _parse_images_and_text(data)
         if not text:return
         if await _maybe_command(text):
             return
