@@ -17,7 +17,7 @@ _STREAM_END=re.compile(r'[。！？!?…~\n]')
 MIN_BUBBLES = 1
 MAX_BUBBLES = 5
 QQ_MAX_TOKENS = int(os.getenv("QQ_MAX_TOKENS", "700"))
-HISTORY_LIMIT = int(os.getenv("QQ_HISTORY_LIMIT", "14"))
+HISTORY_LIMIT = int(os.getenv("QQ_HISTORY_LIMIT", "20"))
 CONTEXT_TTL = float(os.getenv("QQ_CONTEXT_TTL", "45"))
 
 # 只在聊到这些事的时候才把工具清单塞进请求，省下的 prefill 就是省下的时间
