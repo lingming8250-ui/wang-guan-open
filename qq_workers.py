@@ -5,6 +5,9 @@ from context import build_context
 from conversation_store import save_message,recent,recent_private,recent_timed
 from llm_runtime import call_llm,_is_upstream_safety_error
 from free_tools import TOOL_SCHEMAS,TOOL_DISPATCH
+from memory_facts import topic_note,extract_topic,list_candidates,confirm as confirm_memory,discard as discard_memory
+from storage import upsert_setting
+from llm_channels import clear_cache
 
 BOT_ID=os.getenv("QQ_BOT_ID","");BOT_NAME=os.getenv("QQ_BOT_NAME","薄销");OWNER_ID=os.getenv("QQ_OWNER_ID","");OWNER_ALIAS=os.getenv("OWNER_ALIAS","凌冥")
 GROUP_IDS={x.strip() for x in os.getenv("QQ_GROUP_IDS","").split(",") if x.strip()}
@@ -126,7 +129,14 @@ class _BubbleStreamer:
             return False
         text, seg = got
         save_message("assistant", text, scene=self.scene, source="qq")
-        await self.send_fn(self.scope, self.target, seg)
+        try:
+            topic_note(self.scene, "assistant", text)
+        except Exception:
+            pass
+        ok = await self.send_fn(self.scope, self.target, seg)
+        if not ok:
+            import logging
+            logging.getLogger(__name__).warning("qq send returned falsy for scene=%s", self.scene)
         self.sent += 1
         self.first = False
         return True
@@ -228,6 +238,69 @@ PRIVATE_PROMPT_INSTRUCTION = """【你是同一个人】
 不过别加辣汤，挑点清淡的萝卜豆腐垫垫肚。
 
 3. 语气随性自然、接地气，符合三十岁疲惫社友的真实聊天状态，每次回复 1 到 2 句话，分 1 到 2 个气泡发送。"""
+
+
+async def _maybe_command(text: str) -> bool:
+    """私聊里的本地指令，不经过模型，省时间也不会被大模型改味。"""
+    t = (text or "").strip()
+    if not t or t[0] not in ("/", "／"):
+        return False
+    body = t[1:].strip()
+    from qq_bot import send_qq_msg
+    async def reply(s: str):
+        await send_qq_msg("private", int(OWNER_ID or 0), s)
+    try:
+        if body in ("记忆", "记忆列表", "待确认"):
+            rows = list_candidates(10)
+            if not rows:
+                await reply("没有待确认的记忆。")
+                return True
+            lines = [f"#{r.get('id')} {r.get('content')}" for r in rows]
+            await reply("待确认：\n" + "\n".join(lines) + "\n\n要收：/记忆确认 编号    不要：/记忆作废 编号")
+            return True
+        if body.startswith("记忆确认"):
+            ids = re.findall(r"\d+", body)
+            n = confirm_memory(ids)
+            await reply(f"收了 {n} 条。" if n else "没给编号。")
+            return True
+        if body.startswith("记忆作废") or body.startswith("记忆忘掉"):
+            ids = re.findall(r"\d+", body)
+            n = discard_memory(ids)
+            await reply(f"删了 {n} 条。" if n else "没给编号。")
+            return True
+        if body.startswith("模型"):
+            rest = body[2:].strip()
+            if not rest:
+                from llm_channels import get_config
+                cfg = get_config("qq")
+                await reply(f"现在用的 {cfg.get('model')}")
+                return True
+            if rest in ("清除", "默认", "恢复"):
+                upsert_setting("qq_model_override", "")
+                clear_cache("qq")
+                ctx_cache_reset()
+                await reply("改回默认那个了。")
+                return True
+            upsert_setting("qq_model_override", rest)
+            clear_cache("qq")
+            ctx_cache_reset()
+            await reply(f"换成 {rest} 了，下一条生效。")
+            return True
+        if body in ("帮助", "help", "菜单"):
+            await reply("/记忆 看待确认\n/记忆确认 编号\n/记忆作废 编号\n/模型 查看\n/模型 名字 切换")
+            return True
+    except Exception:
+        import logging
+        logging.getLogger(__name__).exception("command failed")
+        await reply("这条指令卡住了。")
+        return True
+    return False
+
+
+def ctx_cache_reset():
+    _ctx_cache["value"] = ""
+    _ctx_cache["at"] = 0.0
+
 
 async def _private_reply(last_msg_id=None):
     global _private_pending
@@ -358,7 +431,15 @@ async def handle_event(data):
         if not OWNER_ID or uid!=OWNER_ID:return
         text=await _parse_images_and_text(data)
         if not text:return
+        if await _maybe_command(text):
+            return
         save_message("user",f"[QQ] {text}",scene="message",source="qq",message_id=mid)
+        try:
+            closed=topic_note("message","user",f"[QQ] {text}")
+            if closed:
+                asyncio.create_task(extract_topic(closed))
+        except Exception:
+            pass
         if _private_pending and not _private_pending.done():_private_pending.cancel()
         _private_pending=asyncio.create_task(_private_reply(last_msg_id=mid));return
     if typ!="group":return
