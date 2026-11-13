@@ -1,9 +1,9 @@
-"""Unified streaming OpenAI-compatible LLM caller used by bots and background tasks."""
+"""Unified streaming OpenAI-compatible LLM caller with fallback provider support."""
 from __future__ import annotations
 import json, logging, re, httpx
 from llm_channels import get_config, record_result, clear_cache
 
-log=logging.getLogger(__name__)
+log = logging.getLogger(__name__)
 
 ERROR_PATTERNS = [
     r"The prompt could not be submitted",
@@ -16,82 +16,106 @@ ERROR_PATTERNS = [
     r"Rate limit reached",
 ]
 
+
 def _is_upstream_safety_error(text: str) -> bool:
     for pat in ERROR_PATTERNS:
         if re.search(pat, text, re.I):
             return True
     return False
 
-def _safe_headers(api_key:str, extra_headers:dict|None=None) -> dict:
-    custom={str(k):str(v) for k,v in (extra_headers or {}).items()}
+
+def _safe_headers(api_key: str, extra_headers: dict | None = None) -> dict:
+    custom = {str(k): str(v) for k, v in (extra_headers or {}).items()}
     for key in list(custom):
-        if key.lower() in {"authorization","content-type"}:
-            custom.pop(key,None)
-    return {**custom,"Authorization":f"Bearer {api_key}","Content-Type":"application/json"}
+        if key.lower() in {"authorization", "content-type"}:
+            custom.pop(key, None)
+    return {**custom, "Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
 
 
-async def call_llm(messages:list,max_tokens:int=4096,tools:list|None=None,extra_body:dict|None=None,channel:str="chat",on_delta=None) -> tuple[str,list]:
-    """on_delta: 可选异步回调，每收到一段增量文本就 await 一次，用于边流边发。"""
-    cfg=get_config(channel)
+async def _once(cfg, messages, max_tokens, tools, extra_body, channel, on_delta, emitted):
+    payload = {"model": cfg["model"], "messages": messages, "max_tokens": max_tokens, "stream": True}
+    if tools: payload["tools"] = tools
+    if extra_body: payload.update(extra_body)
+    headers = _safe_headers(cfg["api_key"], cfg.get("extra_headers"))
+    content = []
+    tc_map = {}
+    got_done = False
+
+    async with httpx.AsyncClient(timeout=httpx.Timeout(connect=20, read=120, write=20, pool=20), http2=False) as client:
+        async with client.stream("POST", cfg["base_url"] + "/chat/completions", headers=headers, json=payload) as resp:
+            if resp.status_code >= 400:
+                body = (await resp.aread()).decode(errors="ignore")[:400]
+                raise RuntimeError(f"HTTP {resp.status_code}: {body}")
+            async for line in resp.aiter_lines():
+                if not line.startswith("data:"):
+                    continue
+                s = line[5:].strip()
+                if s == "[DONE]":
+                    got_done = True
+                    break
+                try:
+                    d = json.loads(s)
+                except Exception:
+                    continue
+                choices = d.get("choices") or []
+                if not choices:
+                    continue
+                delta = choices[0].get("delta") or {}
+                if delta.get("reasoning_content"):
+                    continue
+                if delta.get("content"):
+                    content.append(delta["content"])
+                    emitted[0] = True
+                    if on_delta is not None:
+                        try:
+                            await on_delta(delta["content"])
+                        except Exception:
+                            log.exception("on_delta failed channel=%s", channel)
+                for td in delta.get("tool_calls") or []:
+                    i = td.get("index", 0)
+                    e = tc_map.setdefault(i, {"id": "", "type": "function", "function": {"name": "", "arguments": ""}})
+                    if td.get("id"): e["id"] = td["id"]
+                    fn = td.get("function") or {}
+                    if fn.get("name"): e["function"]["name"] = fn["name"]
+                    if fn.get("arguments"): e["function"]["arguments"] += fn["arguments"]
+
+    if not got_done:
+        log.warning("stream ended without [DONE] channel=%s", channel)
+    full = "".join(content).strip()
+    if _is_upstream_safety_error(full):
+        log.warning("intercepted upstream safety text: %s", full[:120])
+        return "刚卡了一下", []
+    full = re.sub(r'<think>.*?</think>', '', full, flags=re.S)
+    full = re.sub(r'(?:分析[^\n]*[:：]|情绪[^\n]*[:：]|-薄销的人设[^\n]*[:：]).*?(?=\n\n|\Z)', '', full, flags=re.S).strip()
+    return full, [tc_map[i] for i in sorted(tc_map)]
+
+
+async def call_llm(messages, max_tokens=4096, tools=None, extra_body=None, channel="chat", on_delta=None):
+    cfg = get_config(channel)
     if not cfg.get("api_key") or not cfg.get("model"):
         raise RuntimeError(f"LLM channel '{channel}' is not configured")
-    payload={"model":cfg["model"],"messages":messages,"max_tokens":max_tokens,"stream":True}
-    if tools:payload["tools"]=tools
-    if extra_body:payload.update(extra_body)
-    headers=_safe_headers(cfg["api_key"],cfg.get("extra_headers"))
-    content=[]; tc_map={}; got_done=False
-    try:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(connect=30,read=180,write=30,pool=30),http2=False) as client:
-            async with client.stream("POST",cfg["base_url"]+"/chat/completions",headers=headers,json=payload) as resp:
-                if resp.status_code>=400:
-                    body=(await resp.aread()).decode(errors="ignore")[:500]
-                    raise RuntimeError(f"Upstream HTTP {resp.status_code}: {body}")
-                async for line in resp.aiter_lines():
-                    if not line.startswith("data:"):continue
-                    s=line[5:].strip()
-                    if s=="[DONE]":got_done=True;break
-                    try:d=json.loads(s)
-                    except Exception:continue
-                    choices=d.get("choices") or []
-                    if not choices:continue
-                    delta=choices[0].get("delta") or {}
-                    # 严格屏蔽思考内容
-                    if delta.get("reasoning_content"):
-                        continue
-                    if delta.get("content"):
-                        content.append(delta["content"])
-                        if on_delta is not None:
-                            try:
-                                await on_delta(delta["content"])
-                            except Exception:
-                                log.exception("on_delta callback failed channel=%s",channel)
-                    for td in delta.get("tool_calls") or []:
-                        i=td.get("index",0); e=tc_map.setdefault(i,{"id":"","type":"function","function":{"name":"","arguments":""}})
-                        if td.get("id"):e["id"]=td["id"]
-                        fn=td.get("function") or {}
-                        if fn.get("name"):e["function"]["name"]=fn["name"]
-                        if fn.get("arguments"):e["function"]["arguments"]+=fn["arguments"]
-        record_result(cfg.get("config_id"),True,channel)
-    except Exception:
-        if cfg.get("runtime_provider"):
-            try:
-                from runtime_config import rotate_active_api_key
-                rotate_active_api_key()
-                clear_cache()
-            except Exception:
-                log.exception("runtime provider key rotation failed")
-        else:
-            record_result(cfg.get("config_id"),False,channel)
-        raise
-    if not got_done:log.warning("LLM stream ended without [DONE] channel=%s",channel)
-    full_text = "".join(content).strip()
-    
-    # 检测是否撞上了 Google 等上游的安全风控报错
-    if _is_upstream_safety_error(full_text):
-        log.warning("Intercepted upstream safety policy error text: %s", full_text[:120])
-        return "刚卡了一下", []
 
-    # 清洗可能泄漏的思考标签及伪 CoT 分析
-    full_text = re.sub(r'<think>.*?</think>', '', full_text, flags=re.S)
-    full_text = re.sub(r'(?:分析[^\n]*[:：]|情绪[^\n]*[:：]|-薄销的人设[^\n]*[:：]).*?(?=\n\n|\Z)', '', full_text, flags=re.S).strip()
-    return full_text,[tc_map[i] for i in sorted(tc_map)]
+    candidates = [cfg]
+    fb = cfg.get("fallback")
+    if fb:
+        candidates.append(fb)
+
+    last_exc = None
+    for idx, c in enumerate(candidates):
+        emitted = [False]
+        try:
+            text, calls = await _once(c, messages, max_tokens, tools, extra_body, channel, on_delta, emitted)
+            record_result(c.get("config_id"), True, channel)
+            if idx > 0:
+                log.warning("channel %s served by fallback %s", channel, c.get("model"))
+            return text, calls
+        except Exception as exc:
+            last_exc = exc
+            log.warning("channel %s attempt %s (%s) failed: %s",
+                        channel, idx + 1, c.get("model"), str(exc)[:160])
+            if emitted[0]:
+                # 已经吐过字了，换源会把半截话重说一遍，直接报错
+                raise
+            record_result(c.get("config_id"), False, channel)
+            continue
+    raise last_exc if last_exc else RuntimeError("all LLM providers failed")
