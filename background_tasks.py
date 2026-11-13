@@ -70,6 +70,21 @@ async def reminder_checker(send_callback=None):
                 else:
                     update("reminders",f"id=eq.{row['id']}",{"is_done":True})
 
+# 每天固定的主动关怀时刻（北京时间，分钟数）
+PROACTIVE_SLOTS = (
+    (480, "早八催起床"),
+    (510, "早八补一刀"),
+    (700, "午饭"),
+    (740, "午饭回访"),
+    (765, "午休"),
+    (1050, "晚饭"),
+    (1110, "饭后"),
+    (1425, "催睡觉"),
+)
+# 错过准点后还能补发的窗口（分钟）
+PROACTIVE_GRACE = 10
+
+
 async def qq_proactive_loop():
     """QQ 主动查岗与定时关怀后台任务"""
     tz = ZoneInfo(DEFAULT_TIMEZONE)
@@ -79,60 +94,76 @@ async def qq_proactive_loop():
         while True:
             await asyncio.sleep(3600)
 
-    # 每天固定主动推送的时刻点（北京时间）
-    # 08:00 / 08:30 催起早八, 11:40 / 12:20 催午饭, 17:30 / 18:30 催晚饭, 23:45 催睡觉
-    CHECK_HOURS = {"08:00", "08:30", "11:40", "12:20", "12:45", "17:30", "18:30", "23:45"}
     sent_keys = set()
 
     while True:
         await asyncio.sleep(20)
         now = datetime.now(tz)
-        hm = now.strftime("%H:%M")
+        now_min = now.hour * 60 + now.minute
         day_str = now.strftime("%Y-%m-%d")
-        key = f"{day_str}_{hm}"
 
-        if hm in CHECK_HOURS and key not in sent_keys:
-            sent_keys.add(key)
-            if len(sent_keys) > 50:
-                sent_keys = set(list(sent_keys)[-20:])
+        slot = None
+        for minutes, label in PROACTIVE_SLOTS:
+            if 0 <= now_min - minutes <= PROACTIVE_GRACE:
+                slot = (minutes, label)
+                break
+        if slot is None:
+            continue
 
-            try:
-                from context import build_context
-                from conversation_store import recent, save_message
-                from qq_bot import send_qq_msg, _conn
+        key = f"{day_str}_{slot[0]}"
+        if key in sent_keys:
+            continue
 
-                if _conn is None:
-                    log.warning("QQ connection (_conn) is currently None; cannot push message at %s", hm)
+        try:
+            # 关键：必须实读模块属性。from qq_bot import _conn 会把 None 拷进来，之后永远判死
+            import qq_bot
+            if qq_bot._conn is None:
+                log.warning("proactive skipped at %s: qq offline", now.strftime("%H:%M"))
+                continue
+
+            from context import build_context
+            from conversation_store import save_message
+            from qq_bot import send_qq_msg
+
+            hist = recent("message", 20)
+            prompt = (
+                build_context()
+                + f"\n\n【当前现实时间】北京时间 {now.strftime('%m月%d日 %H:%M')}\n"
+                + f"【任务指示】{slot[1]}：你主动在 QQ 上给凌冥发消息。"
+                + "结合你了解的生活细节，像真人随手敲手机一样发 1 到 2 句短促口语。"
+                + "严禁做作深情，严禁说教。"
+            )
+            messages = [{"role": "system", "content": prompt}]
+            if hist:
+                messages.extend(hist[-6:])
+            messages.append({"role": "user", "content": "(系统定时触发：主动给他发一条消息)"})
+
+            text, _ = await call_llm(messages, max_tokens=150, channel="qq")
+            msg = (text or "").strip()
+            if not msg:
+                log.warning("proactive empty reply at %s", now.strftime("%H:%M"))
+                continue
+
+            from qq_workers import _split_into_bubbles, _segments
+            chunks = _split_into_bubbles(msg)
+            ok_all = False
+            for i, chunk in enumerate(chunks):
+                if not chunk:
                     continue
-
-                hist = recent("message", 20)
-                prompt = (
-                    build_context()
-                    + f"\n\n【当前现实时间】北京时间 {now.strftime('%m月%d日 %H:%M')}\n"
-                    + "【任务指示】你主动在 QQ 上给凌冥发消息。根据当前具体时刻（如果是早八催起床、中午催吃热乎的、傍晚问晚饭、深夜催睡觉）"
-                    + "结合你了解的他的生活细节（哈尔滨降温、肠胃弱、爱口嗨、正在上财管/管会课），像真人随手敲手机一样发 1 到 2 句短促口语。"
-                    + "严禁做作深情，严禁说教，不带句号，直接输出内容。"
-                )
-                messages = [{"role": "system", "content": prompt}]
-                if hist:
-                    messages.extend(hist[-6:])
-                messages.append({"role": "user", "content": "(系统定时触发：主动给他发一条消息)"})
-
-                text, _ = await call_llm(messages, max_tokens=150, channel="qq")
-                msg = (text or "").strip()
-                if msg:
-                    from qq_workers import _split_into_bubbles, _segments
-                    chunks = _split_into_bubbles(msg)
-                    for i, chunk in enumerate(chunks):
-                        if chunk:
-                            save_message("assistant", chunk, scene="message", source="qq-proactive")
-                            res = await send_qq_msg("private", int(owner_id), _segments(chunk))
-                            log.info("send_qq_msg result: %s for chunk: %s", res, chunk)
-                            if i < len(chunks) - 1:
-                                await asyncio.sleep(random.uniform(1.2, 2.2))
-                    log.info("Sent QQ proactive message: %s", msg)
-            except Exception as exc:
-                log.warning("QQ proactive push failed: %s", exc)
+                save_message("assistant", chunk, scene="message", source="qq-proactive")
+                res = await send_qq_msg("private", int(owner_id), _segments(chunk))
+                ok_all = bool(res) or ok_all
+                if i < len(chunks) - 1:
+                    await asyncio.sleep(random.uniform(1.0, 2.0))
+            if ok_all:
+                sent_keys.add(key)
+                if len(sent_keys) > 80:
+                    sent_keys = set(sorted(sent_keys)[-40:])
+                log.info("proactive sent (%s): %s", slot[1], msg[:60])
+            else:
+                log.warning("proactive send failed at %s", now.strftime("%H:%M"))
+        except Exception as exc:
+            log.warning("QQ proactive push failed: %s", exc)
 
 async def summary_loop():
     tz=ZoneInfo(DEFAULT_TIMEZONE)
