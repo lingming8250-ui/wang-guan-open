@@ -12,10 +12,8 @@ try:
 except Exception:
     _TZ = timezone.utc
 
-# 之前版本把时间戳写进了正文，历史里残留的这类括号要洗掉，否则模型会一直学样
 _TIME_TAG_RE = re.compile(r'^\s*[（(]\s*(?:刚刚|今天|昨天|前天|\d+\s*分钟前|\d+\s*小时前|\d+\s*月\d+\s*日|\d{4}年)[^）)]*[）)]\s*')
 
-# 重连补取会重复灌同一条消息，这里按 message_id 挡一层
 _SEEN_IDS: deque = deque(maxlen=4000)
 
 
@@ -29,7 +27,6 @@ def _strip_time_tags(s: str) -> str:
 
 
 def _ago(ts) -> str:
-    """把 UTC 时间戳转成「多久之前 + 具体几点几号」，让模型分得清刚才和上个月。"""
     if not ts:
         return ""
     try:
@@ -97,8 +94,14 @@ def recent(scene: str = "message", limit: int = 30, with_ids: bool = False) -> l
 
 
 def recent_timed(scene: str = "message", limit: int = 20) -> list:
-    """只有用户消息带时间标记；助手说过的话把残留标记洗掉，避免模型照抄格式。"""
-    base = f"type=eq.{scene}&order=seq.desc&limit={max(1,min(limit,100))}"
+    """带时间标记的最近对话。
+
+    助手一次回好几条气泡，每条都单独存一行，会把窗口挤得只剩几轮。
+    这里多取几行，再把连着的气泡并成一条，同样的窗口能装下更多轮对话。
+    """
+    want = max(1, min(int(limit), 100))
+    fetch = max(want, min(want * 3, 120))
+    base = f"type=eq.{scene}&order=seq.desc&limit={fetch}"
     rows = None
     try:
         rows = get("chat_context", base + "&select=role,content,message_id,created_at")
@@ -110,30 +113,26 @@ def recent_timed(scene: str = "message", limit: int = 20) -> list:
         except Exception:
             return []
     rows.reverse()
-    out=[]
+
+    merged = []
     for r in rows:
-        role = r.get("role","user")
-        content = r.get("content","") or ""
+        role = r.get("role", "user")
+        content = r.get("content", "") or ""
         mid = r.get("message_id")
         if mid is not None:
-            content=f"[id:{mid}] {content}"
+            content = f"[id:{mid}] {content}"
+
         if role == "user":
-            stamp=_ago(r.get("created_at"))
+            stamp = _ago(r.get("created_at"))
             if stamp:
-                content=f"{stamp} {content}"
+                content = f"{stamp} {content}"
         else:
-            content=_strip_time_tags(content)
-        out.append({"role":role,"content":content})
-    return out
+            content = _strip_time_tags(content)
+            # 连着的气泡并成一条，保留原文
+            if merged and merged[-1]["role"] == "assistant" and not content.startswith("[id:"):
+                merged[-1]["content"] = merged[-1]["content"] + "\n" + content
+                continue
 
+        merged.append({"role": role, "content": content})
 
-def recent_groups(limit: int = 50) -> list:
-    rows = get("chat_context", f"type=like.group_*&order=seq.desc&limit={max(1,min(limit,200))}")
-    rows.reverse(); return rows
-
-
-def recent_private(limit: int = 15) -> list:
-    """获取私聊最近对话，供群聊了解前情但绝不泄密"""
-    rows = get("chat_context", f"type=eq.message&order=seq.desc&limit={max(1,min(limit,50))}")
-    rows.reverse()
-    return rows
+    return merged[-want:]
