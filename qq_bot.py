@@ -11,10 +11,16 @@ _lock=asyncio.Lock()
 _pending={}
 
 async def send_action(action,params):
-    if _conn is None:return False
+    if _conn is None:
+        log.warning("send_action %s skipped: no qq connection",action)
+        return False
     payload={"action":action,"params":params,"echo":str(uuid.uuid4())}
     async with _lock:
-        await _conn.send_text(json.dumps(payload,ensure_ascii=False))
+        try:
+            await _conn.send_text(json.dumps(payload,ensure_ascii=False))
+        except Exception as exc:
+            log.warning("send_action %s failed: %s",action,exc)
+            return False
     return True
 
 async def send_action_wait(action,params,timeout=5):
@@ -39,24 +45,35 @@ async def websocket_endpoint(ws:WebSocket):
     global _conn,_loop
     auth=(ws.headers.get("authorization") or "").replace("Bearer ","").replace("bearer ","").strip()
     if WS_TOKEN and auth!=WS_TOKEN:
+        log.warning("qq ws rejected: bad token")
         await ws.close(code=1008);return
     await ws.accept();this=ws;_conn=this;_loop=asyncio.get_running_loop()
+    log.info("qq ws connected from %s",ws.client)
     from qq_workers import handle_event
     try:
         while True:
             raw=await ws.receive_text()
             try:data=json.loads(raw)
-            except Exception:continue
+            except Exception:
+                log.warning("qq ws non-json payload: %.120s",raw)
+                continue
             echo=data.get("echo")
             if echo and echo in _pending:
                 fut=_pending.pop(echo)
                 if not fut.done():fut.set_result(data)
                 continue
-            if data.get("post_type") and data.get("post_type")!="meta_event":asyncio.create_task(handle_event(data))
-    except WebSocketDisconnect:pass
+            pt=data.get("post_type")
+            if pt and pt!="meta_event":
+                log.info("qq event: post=%s type=%s uid=%s gid=%s len=%s",pt,data.get("message_type"),data.get("user_id"),data.get("group_id"),len(raw))
+                asyncio.create_task(handle_event(data))
+    except WebSocketDisconnect:
+        log.warning("qq ws disconnected")
+    except Exception as exc:
+        log.warning("qq ws error: %s",exc)
     finally:
         if _conn is this:
             _conn=None
+            log.warning("qq ws closed; pending=%s",len(_pending))
             for fut in list(_pending.values()):
                 if not fut.done():fut.cancel()
             _pending.clear()
