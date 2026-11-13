@@ -1,17 +1,4 @@
-"""Multi-channel LLM configuration and key rotation.
-
-Channels mirror the private deployment's useful separation without carrying private names:
-chat / background / vision / proactive / qq / wx.
-
-Resolution order:
-1. channel-specific Supabase llm_config row
-2. channel-specific environment variables
-3. public MiniApp/runtime active provider for chat
-4. generic LLM_* environment variables for chat
-5. non-chat channels fall back to resolved chat config
-
-qq 通道额外支持运行时模型覆盖（bot_settings.qq_model_override），改模型不用重新部署。
-"""
+"""Multi-channel LLM configuration with an optional fallback provider."""
 from __future__ import annotations
 import os, threading, time, logging, requests
 from app_config import SUPABASE_URL, SUPABASE_KEY
@@ -65,8 +52,17 @@ def _generic_env_chat_config() -> dict:
     }
 
 
+def _fallback_config() -> dict | None:
+    """备用站点：主力挂了（429 / 5xx / 超时）就自动顶上，不用手动换。"""
+    base = os.getenv("LLM_FALLBACK_BASE_URL", "").rstrip("/")
+    key = os.getenv("LLM_FALLBACK_API_KEY", "")
+    model = os.getenv("LLM_FALLBACK_MODEL", "")
+    if base and key and model:
+        return {"base_url": base, "api_key": key, "model": model, "extra_headers": {}, "is_fallback": True}
+    return None
+
+
 def _runtime_chat_config() -> dict | None:
-    """Reuse the active provider managed by the public MiniApp/runtime config."""
     try:
         from runtime_config import get_active_provider, get_active_api_key
         row = get_active_provider()
@@ -78,12 +74,9 @@ def _runtime_chat_config() -> dict | None:
         if not base or not key or not model:
             return None
         return {
-            "base_url": base,
-            "api_key": key,
-            "model": model,
+            "base_url": base, "api_key": key, "model": model,
             "extra_headers": row.get("extra_headers") or {},
-            "channel": "chat",
-            "runtime_provider": True,
+            "channel": "chat", "runtime_provider": True,
         }
     except Exception as exc:
         log.debug("runtime provider fallback unavailable: %s", exc)
@@ -114,7 +107,6 @@ def _supabase_config(channel: str) -> dict | None:
 
 
 def _apply_overrides(channel: str, cfg: dict) -> dict:
-    """qq 通道允许用 bot_settings 覆盖模型，改完不用重新部署。"""
     if channel != "qq":
         return cfg
     try:
@@ -150,6 +142,9 @@ def get_config(channel: str = "chat") -> dict:
             cfg = {**cfg, "channel": channel}
 
         cfg = _apply_overrides(channel, cfg)
+        fb = _fallback_config()
+        if fb and not (fb.get("base_url") == cfg.get("base_url") and fb.get("model") == cfg.get("model")):
+            cfg = {**cfg, "fallback": fb}
         _CACHE[channel] = (time.time(), cfg)
         return cfg
 
@@ -160,11 +155,6 @@ def clear_cache(channel: str | None = None):
 
 
 def record_result(config_id, success: bool, channel: str = "chat", fail_threshold: int = 3):
-    """Report key health for Supabase-backed llm_config rows.
-
-    Runtime-config providers rotate in the gateway path itself. Public deployments that do
-    not install the optional Supabase RPCs simply keep working without provider-level RPC rotation.
-    """
     if not config_id or not SUPABASE_URL or not SUPABASE_KEY:
         return
     rpc = "llm_config_record_success" if success else "llm_config_record_failure"
