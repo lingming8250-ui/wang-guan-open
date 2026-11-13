@@ -6,7 +6,8 @@ rolling cross-platform summary, unresolved threads and time. Optional providers 
 registered by extensions without editing this file.
 """
 from __future__ import annotations
-import os
+import os, time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from zoneinfo import ZoneInfo
 from typing import Callable
@@ -15,6 +16,10 @@ from storage import get
 
 ContextProvider=Callable[[],str]
 _PROVIDERS:list[ContextProvider]=[]
+
+# 上下文里除了时间以外的东西，一分钟内不用重查；每条消息都去 Supabase 跑五个请求太慢
+_CACHE_TTL=float(os.getenv("CONTEXT_CACHE_TTL","60"))
+_cache={"body":"","at":0.0}
 
 
 def register_context_provider(provider:ContextProvider):
@@ -118,16 +123,50 @@ def _tick_rolling():
         pass
 
 
-def build_context():
+def _build_body() -> str:
     parts=[_base_prompt()]
-    for fn in (_persona,_memories,_threads,_rolling,_recent_groups):
-        try:v=(fn() or "").strip()
-        except Exception:v=""
-        if v:parts.append(v)
+    loaders=(_persona,_memories,_threads,_rolling,_recent_groups)
+    # 五个查询并行跑，别一条一条等
+    try:
+        with ThreadPoolExecutor(max_workers=len(loaders)) as pool:
+            results=list(pool.map(_safe, loaders))
+    except Exception:
+        results=[]
+    for v in results:
+        if v:
+            parts.append(v)
     for fn in list(_PROVIDERS):
         try:v=(fn() or "").strip()
         except Exception as exc:v=f"[context provider failed: {type(exc).__name__}]"
         if v:parts.append(v)
-    if os.getenv("INCLUDE_TIME_CONTEXT","1")!="0":parts.append(_time())
+    return "\n\n".join(p for p in parts if p)
+
+
+def _safe(fn):
+    try:
+        return (fn() or "").strip()
+    except Exception:
+        return ""
+
+
+def build_context():
+    now=time.time()
+    body=_cache["body"]
+    if not body or now-_cache["at"]>_CACHE_TTL:
+        try:
+            body=_build_body()
+            if body:
+                _cache["body"]=body
+                _cache["at"]=now
+        except Exception:
+            body=body or ""
+    parts=[body]
+    if os.getenv("INCLUDE_TIME_CONTEXT","1")!="0":
+        parts.append(_time())
     _tick_rolling()
-    return "\n\n".join(parts)
+    return "\n\n".join(p for p in parts if p)
+
+
+def clear_cache():
+    _cache["body"]=""
+    _cache["at"]=0.0
