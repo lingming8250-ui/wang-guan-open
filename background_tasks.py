@@ -85,6 +85,19 @@ PROACTIVE_SLOTS = (
 PROACTIVE_GRACE = 10
 
 
+async def _qq_online() -> bool:
+    """直接向 QQ 探活，而不是猜模块变量。"""
+    try:
+        import qq_bot
+        if qq_bot._conn is None:
+            return False
+        probe = await qq_bot.send_action_wait("get_login_info", {}, timeout=4)
+        return bool(probe and probe.get("status") == "ok")
+    except Exception as exc:
+        log.warning("qq probe failed: %s", exc)
+        return False
+
+
 async def qq_proactive_loop():
     """QQ 主动查岗与定时关怀后台任务"""
     tz = ZoneInfo(DEFAULT_TIMEZONE)
@@ -115,9 +128,7 @@ async def qq_proactive_loop():
             continue
 
         try:
-            # 关键：必须实读模块属性。from qq_bot import _conn 会把 None 拷进来，之后永远判死
-            import qq_bot
-            if qq_bot._conn is None:
+            if not await _qq_online():
                 log.warning("proactive skipped at %s: qq offline", now.strftime("%H:%M"))
                 continue
 
@@ -146,16 +157,17 @@ async def qq_proactive_loop():
 
             from qq_workers import _split_into_bubbles, _segments
             chunks = _split_into_bubbles(msg)
-            ok_all = False
+            ok_count = 0
             for i, chunk in enumerate(chunks):
                 if not chunk:
                     continue
                 save_message("assistant", chunk, scene="message", source="qq-proactive")
-                res = await send_qq_msg("private", int(owner_id), _segments(chunk))
-                ok_all = bool(res) or ok_all
+                if await send_qq_msg("private", int(owner_id), _segments(chunk)):
+                    ok_count += 1
                 if i < len(chunks) - 1:
                     await asyncio.sleep(random.uniform(1.0, 2.0))
-            if ok_all:
+
+            if ok_count:
                 sent_keys.add(key)
                 if len(sent_keys) > 80:
                     sent_keys = set(sorted(sent_keys)[-40:])
