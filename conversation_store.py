@@ -128,7 +128,6 @@ def recent_timed(scene: str = "message", limit: int = 20) -> list:
                 content = f"{stamp} {content}"
         else:
             content = _strip_time_tags(content)
-            # 连着的气泡并成一条，保留原文
             if merged and merged[-1]["role"] == "assistant" and not content.startswith("[id:"):
                 merged[-1]["content"] = merged[-1]["content"] + "\n" + content
                 continue
@@ -136,3 +135,15 @@ def recent_timed(scene: str = "message", limit: int = 20) -> list:
         merged.append({"role": role, "content": content})
 
     return merged[-want:]
+
+
+def recent_groups(limit: int = 50) -> list:
+    rows = get("chat_context", f"type=like.group_*&order=seq.desc&limit={max(1,min(limit,200))}")
+    rows.reverse(); return rows
+
+
+def recent_private(limit: int = 15) -> list:
+    """获取私聊最近对话，供群聊了解前情但绝不泄密"""
+    rows = get("chat_context", f"type=eq.message&order=seq.desc&limit={max(1,min(limit,50))}")
+    rows.reverse()
+    return rows
