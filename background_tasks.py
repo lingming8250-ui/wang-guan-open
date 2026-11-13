@@ -4,7 +4,7 @@ Private deployments can override prompts and delivery adapters without changing 
 Secret diary parsing is intentionally not part of the public build.
 """
 from __future__ import annotations
-import asyncio, random, logging, os
+import asyncio, random, logging, os, time
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 from storage import get, update, get_setting, upsert_setting
@@ -18,12 +18,6 @@ log=logging.getLogger(__name__)
 
 
 def _default_reminder_sender():
-    """Build a delivery callback from configured public transports.
-
-    Telegram is supported out of the box. Other platforms can pass their own callback
-    when registering reminder_checker. Missing delivery configuration returns None;
-    due reminders must stay pending rather than being silently consumed.
-    """
     token=os.getenv("TG_BOT_TOKEN","").strip()
     owner=os.getenv("TG_OWNER_ID",os.getenv("TG_CHAT_ID","")).strip()
     if token and owner:
@@ -75,17 +69,16 @@ PROACTIVE_SLOTS = (
     (480, "早八催起床"),
     (510, "早八补一刀"),
     (700, "午饭"),
-    (715, "临时测试"),
+    (725, "临时测试"),
     (740, "午饭回访"),
     (765, "午休"),
     (1050, "晚饭"),
     (1110, "饭后"),
     (1425, "催睡觉"),
 )
-# 错过准点后还能补发的窗口（分钟）
 PROACTIVE_GRACE = 10
 
-# 额外时刻，用环境变量 PROACTIVE_EXTRA_SLOTS="11:55,20:10" 临时加，拨掉就没了
+
 def _extra_slots():
     raw = os.getenv("PROACTIVE_EXTRA_SLOTS", "").strip()
     out = []
@@ -105,21 +98,16 @@ def _all_slots():
     return PROACTIVE_SLOTS + _extra_slots()
 
 
-async def _qq_online() -> bool:
-    """直接向 QQ 探活，而不是猜模块变量。"""
+def _qq_ready() -> bool:
+    """只做本地判断，不发探测包。NapCat 不回探测，探了反而全判离线。"""
     try:
         import qq_bot
-        if qq_bot._conn is None:
-            return False
-        probe = await qq_bot.send_action_wait("get_login_info", {}, timeout=4)
-        return bool(probe and probe.get("status") == "ok")
-    except Exception as exc:
-        log.warning("qq probe failed: %s", exc)
+        return qq_bot._conn is not None
+    except Exception:
         return False
 
 
 async def qq_proactive_loop():
-    """QQ 主动查岗与定时关怀后台任务"""
     tz = ZoneInfo(DEFAULT_TIMEZONE)
     owner_id = os.getenv("QQ_OWNER_ID", "").strip()
     if not owner_id:
@@ -128,6 +116,7 @@ async def qq_proactive_loop():
             await asyncio.sleep(3600)
 
     sent_keys = set()
+    retry_at = {}
 
     while True:
         await asyncio.sleep(20)
@@ -144,14 +133,14 @@ async def qq_proactive_loop():
             continue
 
         key = f"{day_str}_{slot[0]}"
-        if key in sent_keys:
+        if key in sent_keys or retry_at.get(key, 0) > time.time():
+            continue
+        if not _qq_ready():
+            log.warning("proactive skipped at %s: qq offline", now.strftime("%H:%M"))
+            retry_at[key] = time.time() + 60
             continue
 
         try:
-            if not await _qq_online():
-                log.warning("proactive skipped at %s: qq offline", now.strftime("%H:%M"))
-                continue
-
             from context import build_context
             from conversation_store import save_message
             from qq_bot import send_qq_msg
@@ -173,6 +162,7 @@ async def qq_proactive_loop():
             msg = (text or "").strip()
             if not msg:
                 log.warning("proactive empty reply at %s", now.strftime("%H:%M"))
+                retry_at[key] = time.time() + 120
                 continue
 
             from qq_workers import _split_into_bubbles, _segments
@@ -194,8 +184,10 @@ async def qq_proactive_loop():
                 log.info("proactive sent (%s): %s", slot[1], msg[:60])
             else:
                 log.warning("proactive send failed at %s", now.strftime("%H:%M"))
+                retry_at[key] = time.time() + 120
         except Exception as exc:
             log.warning("QQ proactive push failed: %s", exc)
+            retry_at[key] = time.time() + 120
 
 async def summary_loop():
     tz=ZoneInfo(DEFAULT_TIMEZONE)
