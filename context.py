@@ -58,10 +58,39 @@ def _threads():
     return "【Open threads】\n"+"\n".join(f"- [{r.get('status')}] {r.get('title','')}: {r.get('synthetic_guess','')}" for r in rows)
 
 
+def _short_date(ts) -> str:
+    if not ts:
+        return ""
+    try:
+        s = str(ts).replace("Z", "+00:00")
+        if "." in s:
+            head, _, tail = s.partition(".")
+            rest = tail
+            for sep in ("+", "-"):
+                if sep in rest:
+                    rest = rest[rest.index(sep):]
+                    break
+            else:
+                rest = ""
+            s = head + rest
+        dt = datetime.fromisoformat(s)
+        if dt.tzinfo is None:
+            from datetime import timezone
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(ZoneInfo(DEFAULT_TIMEZONE)).strftime("%Y-%m-%d %H:%M")
+    except Exception:
+        return ""
+
+
 def _rolling():
     rows=get("platform_rolling_summary","order=id.desc&limit=1&select=content,period_start,period_end")
     if not rows:return ""
-    return "【最近这段对话的记忆摘要（出了滑窗的老内容都在这里）】\n"+(rows[0].get("content") or "")
+    content=(rows[0].get("content") or "").strip()
+    if not content:return ""
+    upto=_short_date(rows[0].get("period_end"))
+    head="【最近这段对话的记忆摘要（出了滑窗的老内容都在这里）"
+    head += f"，更新至 {upto}】" if upto else "】"
+    return head+"\n"+content
 
 
 def _recent_groups():
@@ -82,7 +111,6 @@ def _time():
 
 
 def _tick_rolling():
-    """顺手看一眼有没有老消息该压进摘要，后台线程跑，不挡回复。"""
     try:
         import rolling_memory
         rolling_memory.maybe_schedule()
