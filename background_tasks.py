@@ -1,10 +1,6 @@
-"""Background jobs for reminders, summaries, proactive messaging and rolling compression.
-
-Private deployments can override prompts and delivery adapters without changing scheduling code.
-Secret diary parsing is intentionally not part of the public build.
-"""
+"""Background jobs for reminders, summaries, proactive messaging and rolling compression."""
 from __future__ import annotations
-import asyncio, random, logging, os, time
+import asyncio, random, logging, os, sys, time
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 from storage import get, update, get_setting, upsert_setting
@@ -15,6 +11,10 @@ from scheduled import run_nightly_summary, run_platform_batch_compress, run_plat
 from app_config import DEFAULT_TIMEZONE
 
 log=logging.getLogger(__name__)
+
+# 这个脚本跑在独立的后台进程里，没有 QQ 连接对象。
+# 只有一个进程负责主动推送：有 websocket 的那个（main.py）。
+_IS_BACKGROUND_PROCESS = "background_main" in os.path.basename(sys.argv[0] or "")
 
 
 def _default_reminder_sender():
@@ -69,8 +69,7 @@ PROACTIVE_SLOTS = (
     (480, "早八催起床"),
     (510, "早八补一刀"),
     (700, "午饭"),
-    (725, "临时测试"),
-    (740, "午饭回访"),
+    (735, "临时测试"),
     (765, "午休"),
     (1050, "晚饭"),
     (1110, "饭后"),
@@ -98,16 +97,13 @@ def _all_slots():
     return PROACTIVE_SLOTS + _extra_slots()
 
 
-def _qq_ready() -> bool:
-    """只做本地判断，不发探测包。NapCat 不回探测，探了反而全判离线。"""
-    try:
-        import qq_bot
-        return qq_bot._conn is not None
-    except Exception:
-        return False
-
-
 async def qq_proactive_loop():
+    """主动消息。只允许在有 QQ 连接的那个进程里跑。"""
+    if _IS_BACKGROUND_PROCESS:
+        log.info("proactive loop skipped in background process")
+        while True:
+            await asyncio.sleep(3600)
+
     tz = ZoneInfo(DEFAULT_TIMEZONE)
     owner_id = os.getenv("QQ_OWNER_ID", "").strip()
     if not owner_id:
@@ -135,12 +131,14 @@ async def qq_proactive_loop():
         key = f"{day_str}_{slot[0]}"
         if key in sent_keys or retry_at.get(key, 0) > time.time():
             continue
-        if not _qq_ready():
-            log.warning("proactive skipped at %s: qq offline", now.strftime("%H:%M"))
-            retry_at[key] = time.time() + 60
-            continue
 
         try:
+            import qq_bot
+            if qq_bot._conn is None:
+                log.warning("proactive skipped at %s: no ws in this process", now.strftime("%H:%M"))
+                retry_at[key] = time.time() + 60
+                continue
+
             from context import build_context
             from conversation_store import save_message
             from qq_bot import send_qq_msg
