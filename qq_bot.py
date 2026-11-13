@@ -9,6 +9,7 @@ _conn:WebSocket|None=None
 _loop=None
 _lock=asyncio.Lock()
 _pending={}
+_proactive_started=False
 
 async def send_action(action,params):
     if _conn is None:
@@ -41,6 +42,21 @@ async def get_msg(message_id):
 async def get_image(file_id):
     r=await send_action_wait("get_image",{"file":str(file_id)});return r.get("data") if r and r.get("status")=="ok" else None
 
+
+def _ensure_proactive():
+    """主动消息必须跑在有连接的这个进程里，后台进程看不到 _conn。"""
+    global _proactive_started
+    if _proactive_started:
+        return
+    _proactive_started=True
+    try:
+        from background_tasks import qq_proactive_loop
+        asyncio.create_task(qq_proactive_loop())
+        log.info("proactive loop started in web process")
+    except Exception as exc:
+        log.warning("failed to start proactive loop: %s",exc)
+
+
 async def websocket_endpoint(ws:WebSocket):
     global _conn,_loop
     auth=(ws.headers.get("authorization") or "").replace("Bearer ","").replace("bearer ","").strip()
@@ -49,6 +65,7 @@ async def websocket_endpoint(ws:WebSocket):
         await ws.close(code=1008);return
     await ws.accept();this=ws;_conn=this;_loop=asyncio.get_running_loop()
     log.info("qq ws connected from %s",ws.client)
+    _ensure_proactive()
     from qq_workers import handle_event
     try:
         while True:
@@ -57,10 +74,13 @@ async def websocket_endpoint(ws:WebSocket):
             except Exception:
                 log.warning("qq ws non-json payload: %.120s",raw)
                 continue
-            echo=data.get("echo")
+            echo=data.get("echo") if isinstance(data,dict) else None
             if echo and echo in _pending:
                 fut=_pending.pop(echo)
                 if not fut.done():fut.set_result(data)
+                continue
+            if not isinstance(data,dict):
+                log.warning("qq ws non-dict event: %s",type(data).__name__)
                 continue
             pt=data.get("post_type")
             if pt and pt!="meta_event":
