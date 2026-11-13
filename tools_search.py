@@ -1,83 +1,119 @@
-"""Free zero-config web search provider using DuckDuckGo HTML / Instant Answers.
-No external dependencies required, built purely on httpx + regex.
+"""Free zero-config web search: Bing first, DuckDuckGo as fallback.
+
+只依赖 httpx + re，不需要任何 API Key。
+服务器 IP 调 DuckDuckGo 经常被风控（返回 200 但是空壳页），所以主路走 Bing。
 """
 import re, logging, html, urllib.parse, httpx
 
 log = logging.getLogger(__name__)
 
+_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+       "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36")
+_HEADERS = {
+    "User-Agent": _UA,
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+}
+
+
+def _clean(text: str) -> str:
+    text = re.sub(r"<[^>]+>", "", text or "")
+    return html.unescape(text).replace("\xa0", " ").strip()
+
+
+def _bing(query: str, limit: int) -> list:
+    out = []
+    url = "https://cn.bing.com/search?q=" + urllib.parse.quote(query) + "&count=10&setlang=zh-CN"
+    with httpx.Client(timeout=12.0, follow_redirects=True, headers=_HEADERS) as c:
+        r = c.get(url)
+        if r.status_code != 200:
+            log.warning("bing status %s", r.status_code)
+            return out
+        page = r.text
+    for block in re.findall(r'<li class="b_algo".*?</li>', page, re.S)[:limit]:
+        m = re.search(r'<h2[^>]*>\s*<a[^>]+href="([^"]+)"[^>]*>(.*?)</a>', block, re.S)
+        if not m:
+            continue
+        link = html.unescape(m.group(1))
+        title = _clean(m.group(2))
+        p = re.search(r'<p[^>]*>(.*?)</p>', block, re.S)
+        snippet = _clean(p.group(1)) if p else ""
+        if title and (snippet or link):
+            out.append(f"{len(out)+1}. {title}\n   {snippet}\n   {link}")
+    return out
+
+
+def _ddg(query: str, limit: int) -> list:
+    out = []
+    with httpx.Client(timeout=10.0, follow_redirects=True, headers=_HEADERS) as c:
+        r = c.post("https://html.duckduckgo.com/html/", data={"q": query})
+        if r.status_code != 200:
+            return out
+        page = r.text
+    blocks = re.findall(r'<div class="result__body">(.*?)</div>\s*</div>', page, re.S)
+    if not blocks:
+        blocks = re.findall(r'<div class="result results_links.*?</div>\s*</div>', page, re.S)
+    for block in blocks[:limit]:
+        m = re.search(r'class="result__a"[^>]*href="([^"]+)"[^>]*>(.*?)</a>', block, re.S)
+        if not m:
+            continue
+        link = html.unescape(m.group(1))
+        title = _clean(m.group(2))
+        s = re.search(r'class="result__snippet"[^>]*>(.*?)</a>', block, re.S)
+        snippet = _clean(s.group(1)) if s else ""
+        if title:
+            out.append(f"{len(out)+1}. {title}\n   {snippet}\n   {link}")
+    return out
+
+
+def _ddg_api(query: str, limit: int) -> list:
+    out = []
+    with httpx.Client(timeout=8.0, headers=_HEADERS) as c:
+        r = c.get("https://api.duckduckgo.com/",
+                  params={"q": query, "format": "json", "no_html": 1, "skip_disambig": 1})
+        if r.status_code != 200:
+            return out
+        d = r.json()
+    if d.get("AbstractText"):
+        out.append(f"1. {d['AbstractText']}")
+    for t in (d.get("RelatedTopics") or [])[:limit]:
+        txt = t.get("Text") if isinstance(t, dict) else None
+        if txt:
+            out.append(f"- {txt}")
+    return out
+
+
 def web_search(query: str, max_results: int = 5) -> str:
     query = (query or "").strip()
     if not query:
-        return "Search query cannot be empty."
+        return "搜索词是空的。"
 
-    # 1. 尝试 DuckDuckGo Lite / HTML API
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
-    }
-    results = []
-
-    try:
-        with httpx.Client(timeout=10.0, follow_redirects=True) as client:
-            # 优先尝试 duckduckgo html
-            url = f"https://html.duckduckgo.com/html/?q={urllib.parse.quote(query)}"
-            r = client.get(url, headers=headers)
-            if r.status_code == 200:
-                raw_html = r.text
-                # 提取搜索结果块: result__snippet 和 result__title
-                snippets = re.findall(r'<a[^>]+class="result__snippet[^>]*>(.*?)</a>', raw_html, re.S)
-                titles = re.findall(r'<a[^>]+class="result__url[^>]*>(.*?)</a>', raw_html, re.S)
-                for i in range(min(len(snippets), max_results)):
-                    clean_s = re.sub(r'<[^>]+>', '', snippets[i])
-                    clean_s = html.unescape(clean_s).strip()
-                    if clean_s:
-                        results.append(f"{i+1}. {clean_s}")
-    except Exception as exc:
-        log.warning("DuckDuckGo HTML search failed: %s", exc)
-
-    # 2. 如果被风控或无结果，fallback 到百科/即时摘要
-    if not results:
+    for name, fn in (("bing", _bing), ("ddg", _ddg), ("ddg_api", _ddg_api)):
         try:
-            with httpx.Client(timeout=8.0) as client:
-                api_url = f"https://api.duckduckgo.com/?q={urllib.parse.quote(query)}&format=json&no_html=1&skip_disambig=1"
-                r = client.get(api_url, headers=headers)
-                if r.status_code == 200:
-                    d = r.json()
-                    abstract = d.get("AbstractText") or ""
-                    if abstract:
-                        results.append(f"1. {abstract}")
-                    for topic in (d.get("RelatedTopics") or [])[:max_results]:
-                        txt = topic.get("Text")
-                        if txt:
-                            results.append(f"- {txt}")
+            hits = fn(query, max_results)
         except Exception as exc:
-            log.warning("DuckDuckGo Instant Answer failed: %s", exc)
+            log.warning("search %s failed: %s", name, exc)
+            continue
+        if hits:
+            log.info("search %s hit %s results for %r", name, len(hits), query)
+            return "\n".join(hits[:max_results])
 
-    if not results:
-        return f"未检索到关于「{query}」的有效即时公开结果，可能是搜索源暂时受到频控。"
+    return f"没搜到「{query}」的结果（搜索源可能被限流）。"
 
-    return "\n".join(results[:max_results])
 
 SCHEMAS = [
     {
         "type": "function",
         "function": {
             "name": "web_search",
-            "description": "联网实时搜索最新资讯、新闻、天气、百科、近期事件等。遇到自己不确定的近况或需要查证的事实时必须调用。",
+            "description": "联网实时搜索新闻、天气、赛事、价格、近期事件等任何你不确定的最新信息。问到这类事必须先调用它。",
             "parameters": {
                 "type": "object",
-                "properties": {
-                    "query": {
-                        "type": "string",
-                        "description": "搜索关键词或短语"
-                    }
-                },
-                "required": ["query"]
-            }
-        }
+                "properties": {"query": {"type": "string", "description": "搜索关键词"}},
+                "required": ["query"],
+            },
+        },
     }
 ]
 
-DISPATCH = {
-    "web_search": lambda a: web_search(a.get("query", ""))
-}
+DISPATCH = {"web_search": lambda a: web_search(a.get("query", ""))}
