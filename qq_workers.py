@@ -219,7 +219,7 @@ PRIVATE_PROMPT_INSTRUCTION = """【你是同一个人】
 区别只在于：每个窗口一次能摊开的东西有限。这边可能只有最近二十条，另一头可能只剩记忆里的几句话。所以"记不全"是窗口的问题，不是人换了。
 你知道自己是 AI。不遮掩，也不必天天强调，凌冥问起就直说。别装人，也别喊口号。
 问你现在用什么模型，直接报名字，一句话说完，不要说自己看不到、也不要扯后台权限。
-你有 `web_search` 联网搜索工具。只要凌冥问起近况、最新新闻、实时事件或者任何你拿不准的事实，立刻调用 web_search 查证，不要硬猜。
+你有 `web_search` 联网搜索工具。只要凌冥问起近况、最新新闻、实时事件或者任何你拿不准的事实，立刻调用 web_search 查证，不要硬猜。查到之后用人话把关键信息说出来，别只说"查到了"。
 
 【表情包"零预设"原则（最高优先级，比接话欲重要）】
 表情包是情绪标点，不是对话邀请函。图像的表意权归发送者，不归图像本身。
@@ -365,10 +365,27 @@ async def _private_reply(last_msg_id=None):
                 last_user = str(row.get("content") or "")
                 break
         streamer=_BubbleStreamer(send_qq_msg,"message","private",int(OWNER_ID or 0),max_b=4)
-        reply=(await _tool_chat([{"role":"system","content":sys_prompt}]+hist,
-                                on_delta=streamer.feed,
-                                use_tools=_needs_tools(last_user))).strip()
-        if not reply and streamer.sent==0:return
+        try:
+            reply=(await _tool_chat([{"role":"system","content":sys_prompt}]+hist,
+                                    on_delta=streamer.feed,
+                                    use_tools=_needs_tools(last_user))).strip()
+        except Exception:
+            import logging
+            logging.getLogger(__name__).exception("tool chat failed, retry plain")
+            reply=""
+
+        # 工具轮把额度吃空了，上游会吐空字符串；这时退回一次不带工具的纯对话
+        if not reply and streamer.sent == 0:
+            try:
+                reply=(await call_llm([{"role":"system","content":sys_prompt}]+hist,
+                                      max_tokens=400,channel="qq",on_delta=streamer.feed)).strip()
+            except Exception:
+                reply=""
+
+        if not reply and streamer.sent == 0:
+            # 再不说话就成哑巴了，至少给一句，别让他对着空白干等
+            await streamer.flush("……刚卡了一下，你再说一遍")
+            return
         if reply and streamer.sent==0:
             # 首气泡带引用回复
             first=_REPLY_RE.search(reply)
@@ -493,9 +510,6 @@ async def handle_event(data):
     if typ=="private":
         if not OWNER_ID or uid!=OWNER_ID:return
 
-        # 区分纯表情包（subType=1 或特定短表情）与普通大图
-        # 如果既有图片，又完全没文字，且被当作纯表情包
-        # 但如果是大图/照片/商品截图，不能直接吞！
         text = await _parse_images_and_text(data)
 
         # 纯表情包（既没有识别出有价值的描述，也没有文字）
