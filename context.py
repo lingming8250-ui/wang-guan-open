@@ -61,7 +61,7 @@ def _threads():
 def _rolling():
     rows=get("platform_rolling_summary","order=id.desc&limit=1&select=content,period_start,period_end")
     if not rows:return ""
-    return "【Recent cross-platform context】\n"+(rows[0].get("content") or "")
+    return "【最近这段对话的记忆摘要（出了滑窗的老内容都在这里）】\n"+(rows[0].get("content") or "")
 
 
 def _recent_groups():
@@ -81,6 +81,15 @@ def _time():
     return f"【Current time】{now.strftime('%Y-%m-%d %H:%M %Z')}"
 
 
+def _tick_rolling():
+    """顺手看一眼有没有老消息该压进摘要，后台线程跑，不挡回复。"""
+    try:
+        import rolling_memory
+        rolling_memory.maybe_schedule()
+    except Exception:
+        pass
+
+
 def build_context():
     parts=[_base_prompt()]
     for fn in (_persona,_memories,_threads,_rolling,_recent_groups):
@@ -92,4 +101,5 @@ def build_context():
         except Exception as exc:v=f"[context provider failed: {type(exc).__name__}]"
         if v:parts.append(v)
     if os.getenv("INCLUDE_TIME_CONTEXT","1")!="0":parts.append(_time())
+    _tick_rolling()
     return "\n\n".join(parts)
