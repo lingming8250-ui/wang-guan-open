@@ -13,7 +13,7 @@ from app_config import DEFAULT_TIMEZONE
 log=logging.getLogger(__name__)
 
 # 这个脚本跑在独立的后台进程里，没有 QQ 连接对象。
-# 只有一个进程负责主动推送：有 websocket 的那个（main.py）。
+# 只有一个进程负责主动推送：有 websocket 的那个（main.py 的 lifespan / qq_bot 连接时启动）。
 _IS_BACKGROUND_PROCESS = "background_main" in os.path.basename(sys.argv[0] or "")
 
 
@@ -69,7 +69,6 @@ PROACTIVE_SLOTS = (
     (480, "早八催起床"),
     (510, "早八补一刀"),
     (700, "午饭"),
-    (735, "临时测试"),
     (765, "午休"),
     (1050, "晚饭"),
     (1110, "饭后"),
