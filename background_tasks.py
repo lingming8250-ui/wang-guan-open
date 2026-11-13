@@ -75,6 +75,7 @@ PROACTIVE_SLOTS = (
     (480, "早八催起床"),
     (510, "早八补一刀"),
     (700, "午饭"),
+    (715, "临时测试"),
     (740, "午饭回访"),
     (765, "午休"),
     (1050, "晚饭"),
@@ -83,6 +84,25 @@ PROACTIVE_SLOTS = (
 )
 # 错过准点后还能补发的窗口（分钟）
 PROACTIVE_GRACE = 10
+
+# 额外时刻，用环境变量 PROACTIVE_EXTRA_SLOTS="11:55,20:10" 临时加，拨掉就没了
+def _extra_slots():
+    raw = os.getenv("PROACTIVE_EXTRA_SLOTS", "").strip()
+    out = []
+    for part in raw.split(","):
+        part = part.strip()
+        if not part or ":" not in part:
+            continue
+        try:
+            h, m = part.split(":", 1)
+            out.append((int(h) * 60 + int(m), f"临时 {part}"))
+        except Exception:
+            continue
+    return tuple(out)
+
+
+def _all_slots():
+    return PROACTIVE_SLOTS + _extra_slots()
 
 
 async def _qq_online() -> bool:
@@ -116,7 +136,7 @@ async def qq_proactive_loop():
         day_str = now.strftime("%Y-%m-%d")
 
         slot = None
-        for minutes, label in PROACTIVE_SLOTS:
+        for minutes, label in _all_slots():
             if 0 <= now_min - minutes <= PROACTIVE_GRACE:
                 slot = (minutes, label)
                 break
