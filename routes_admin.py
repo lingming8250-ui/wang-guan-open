@@ -1,7 +1,7 @@
 """Administrative endpoints for public MiniApp and diagnostics."""
 import os, hmac, json, asyncio
 from starlette.responses import JSONResponse
-from memory_store import list_memories
+from memory_store import list_memories, add_memory
 from storage import get, delete_ids
 from scheduled import run_nightly_summary, run_platform_batch_compress
 from context import build_context
@@ -20,6 +20,27 @@ async def context_preview(request):
 
 async def memories(request):
     if not auth_ok(request):return JSONResponse({"error":"unauthorized"},401)
+    if request.method=="POST":
+        try:
+            body=await request.json()
+        except Exception:
+            return JSONResponse({"error":"invalid json"},400)
+        items=body.get("items") if isinstance(body,dict) else None
+        if items is None:items=[body]
+        if not isinstance(items,list):return JSONResponse({"error":"items must be a list"},400)
+        saved=0;failed=[]
+        for it in items:
+            if not isinstance(it,dict):
+                failed.append({"error":"not an object"});continue
+            content=str(it.get("content") or "").strip()
+            if not content:
+                failed.append({"error":"empty content"});continue
+            try:
+                add_memory(content,it.get("memory_layer") or "current",it.get("importance",3),it.get("summary",""),it.get("category",""))
+                saved+=1
+            except Exception as exc:
+                failed.append({"content":content[:80],"error":type(exc).__name__})
+        return JSONResponse({"ok":True,"saved":saved,"failed":failed})
     return JSONResponse({"ok":True,"items":list_memories(limit=100)})
 
 async def threads(request):
