@@ -138,6 +138,41 @@ async def health(_: Request):
     })
 
 
+async def list_models(request: Request):
+    """Model catalogue: official DeepSeek entries plus whatever the relay offers."""
+    if not _authorized(request):
+        return JSONResponse({"error": {"message": "Unauthorized"}}, status_code=401)
+
+    items = []
+    if DEEPSEEK_API_KEY:
+        items.append({"id": "deepseek-chat", "object": "model", "owned_by": "deepseek"})
+        items.append({"id": "deepseek-v4-pro", "object": "model", "owned_by": "deepseek"})
+
+    try:
+        base, key, model, extra_headers, _ = _upstream_config()
+        async with httpx.AsyncClient(timeout=20, http2=False) as client:
+            resp = await client.get(f"{base}/models", headers=_headers(key, extra_headers))
+            if resp.status_code == 200:
+                for row in (resp.json().get("data") or []):
+                    if isinstance(row, dict) and row.get("id"):
+                        items.append(row)
+            else:
+                log.warning("model catalogue fetch failed: %s", resp.status_code)
+    except Exception:
+        log.exception("model catalogue fetch failed")
+
+    seen = set()
+    unique = []
+    for row in items:
+        mid = row.get("id")
+        if not mid or mid in seen:
+            continue
+        seen.add(mid)
+        unique.append(row)
+
+    return JSONResponse({"object": "list", "data": unique})
+
+
 async def miniapp(_: Request):
     return FileResponse("miniapp/miniapp.html", media_type="text/html")
 
@@ -512,6 +547,7 @@ async def _lifespan(app):
 
 app = Starlette(routes=[
     Route("/health", health, methods=["GET"]),
+    Route("/v1/models", list_models, methods=["GET"]),
     Route("/miniapp", miniapp, methods=["GET"]),
     Route("/plan", plan_page, methods=["GET"]),
     Route("/cet4.json", cet4_json_api, methods=["GET"]),
