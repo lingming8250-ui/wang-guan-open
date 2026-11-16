@@ -145,8 +145,22 @@ async def list_models(request: Request):
 
     items = []
     if DEEPSEEK_API_KEY:
-        items.append({"id": "deepseek-chat", "object": "model", "owned_by": "deepseek"})
-        items.append({"id": "deepseek-v4-pro", "object": "model", "owned_by": "deepseek"})
+        try:
+            async with httpx.AsyncClient(timeout=20, http2=False) as dclient:
+                resp = await dclient.get(f"{DEEPSEEK_BASE_URL}/models", headers=_headers(DEEPSEEK_API_KEY))
+                if resp.status_code == 200:
+                    for row in (resp.json().get("data") or []):
+                        if isinstance(row, dict) and row.get("id"):
+                            items.append(row)
+        except Exception:
+            log.exception("deepseek catalogue fetch failed")
+        if not any(str(i.get("id", "")).startswith("deepseek") for i in items):
+            items.append({
+                "id": "deepseek-chat", "object": "model", "owned_by": "deepseek",
+                "name": "DeepSeek-V4.1-Flash",
+                "input_modalities": ["text", "image"], "output_modalities": ["text"],
+                "context_length": 1048576, "max_output_tokens": 393216,
+            })
 
     try:
         base, key, model, extra_headers, _ = _upstream_config()
