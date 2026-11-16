@@ -1,13 +1,21 @@
-"""Generic file-backed runtime configuration for the public edition."""
+"""Generic runtime configuration.
+
+Providers live in Supabase (table `bot_settings`, key `runtime_config`) so a container
+rebuild never wipes them. When Supabase is not configured, fall back to a local JSON file.
+"""
 from __future__ import annotations
 
 import json
+import logging
 import os
 import threading
 from pathlib import Path
 from typing import Any
 
+log = logging.getLogger(__name__)
+
 _CONFIG_PATH = Path(os.environ.get("RUNTIME_CONFIG_PATH", "data/runtime_config.json"))
+_SETTING_KEY = os.environ.get("RUNTIME_CONFIG_KEY", "runtime_config")
 _LOCK = threading.RLock()
 _MAX_PROVIDERS = 100
 _MAX_KEYS = 50
@@ -103,20 +111,44 @@ def _clean_config(data: Any) -> dict[str, Any]:
     return clean
 
 
-def load_config() -> dict[str, Any]:
-    with _LOCK:
-        if not _CONFIG_PATH.exists():
-            return _clone_default()
-        try:
-            data = json.loads(_CONFIG_PATH.read_text("utf-8"))
-        except Exception:
-            return _clone_default()
+def _load_remote() -> dict[str, Any] | None:
+    try:
+        from storage import enabled, get_setting
+        if not enabled():
+            return None
+        raw = get_setting(_SETTING_KEY)
+        if not raw:
+            return None
+        data = json.loads(raw) if isinstance(raw, str) else raw
         return _clean_config(data)
+    except Exception:
+        log.exception("remote config load failed")
+        return None
 
 
-def save_config(data: dict[str, Any]) -> dict[str, Any]:
-    clean = _clean_config(data)
-    with _LOCK:
+def _save_remote(clean: dict[str, Any]) -> bool:
+    try:
+        from storage import enabled, upsert_setting
+        if not enabled():
+            return False
+        upsert_setting(_SETTING_KEY, json.dumps(clean, ensure_ascii=False))
+        return True
+    except Exception:
+        log.exception("remote config save failed")
+        return False
+
+
+def _load_file() -> dict[str, Any]:
+    if not _CONFIG_PATH.exists():
+        return _clone_default()
+    try:
+        return _clean_config(json.loads(_CONFIG_PATH.read_text("utf-8")))
+    except Exception:
+        return _clone_default()
+
+
+def _save_file(clean: dict[str, Any]) -> None:
+    try:
         _ensure_parent()
         tmp = _CONFIG_PATH.with_suffix(_CONFIG_PATH.suffix + ".tmp")
         tmp.write_text(json.dumps(clean, ensure_ascii=False, indent=2), "utf-8")
@@ -129,6 +161,26 @@ def save_config(data: dict[str, Any]) -> dict[str, Any]:
             os.chmod(_CONFIG_PATH, 0o600)
         except OSError:
             pass
+    except Exception:
+        log.exception("local config save failed")
+
+
+def load_config() -> dict[str, Any]:
+    with _LOCK:
+        remote = _load_remote()
+        if remote is not None:
+            return remote
+        return _load_file()
+
+
+def save_config(data: dict[str, Any]) -> dict[str, Any]:
+    clean = _clean_config(data)
+    with _LOCK:
+        if not _save_remote(clean):
+            _save_file(clean)
+        else:
+            # keep a local mirror so a Supabase outage still serves the last known config
+            _save_file(clean)
     return clean
 
 
