@@ -42,6 +42,17 @@ if SYSTEM_INJECTION_MODE not in {"prepend", "append", "replace"}:
     SYSTEM_INJECTION_MODE = "prepend"
 MAX_INTERNAL_TOOL_ROUNDS = max(1, min(int(os.environ.get("MAX_INTERNAL_TOOL_ROUNDS", "6")), 12))
 
+DEEPSEEK_BASE_URL = os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1").rstrip("/")
+DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY", "").strip()
+
+
+def _direct_route(model: str):
+    """Model names starting with 'deepseek' go straight to the official endpoint."""
+    m = str(model or "").strip().lower()
+    if DEEPSEEK_API_KEY and m.startswith("deepseek"):
+        return DEEPSEEK_BASE_URL, DEEPSEEK_API_KEY
+    return None
+
 
 def _upstream_config():
     provider = get_active_provider()
@@ -176,6 +187,11 @@ async def admin_context_preview(request: Request):
 async def _post_json_with_key_rotation(payload: dict):
     base, api_key, model, extra_headers, runtime_provider = _upstream_config()
     payload["model"] = _resolve_model(payload, model)
+    direct = _direct_route(payload["model"])
+    if direct:
+        base, api_key = direct
+        extra_headers = {}
+        runtime_provider = False
     target = f"{base}/chat/completions"
     timeout = httpx.Timeout(connect=30, read=UPSTREAM_READ_TIMEOUT, write=30, pool=30)
 
@@ -370,9 +386,12 @@ async def chat_completions(request: Request):
             return JSONResponse({"error": {"message": "Upstream returned a non-JSON response"}}, status_code=502)
 
     async def event_stream():
+        direct = _direct_route(payload.get("model", ""))
         provider = get_active_provider() if runtime_provider else None
         tries = len(provider.get("api_keys") or []) if provider else 1
         tries = max(1, tries)
+        if direct:
+            tries = 1
         for attempt in range(tries):
             if runtime_provider and attempt > 0:
                 try:
@@ -383,6 +402,10 @@ async def chat_completions(request: Request):
                 b, k, m, eh = base, api_key, model, extra_headers
             stream_payload = dict(payload)
             stream_payload["model"] = _resolve_model(stream_payload, m)
+            route = _direct_route(stream_payload["model"])
+            if route:
+                b, k = route
+                eh = {}
             client = httpx.AsyncClient(timeout=timeout, http2=False)
             try:
                 async with client.stream("POST", f"{b}/chat/completions", headers=_headers(k, eh), json=stream_payload) as resp:
