@@ -43,15 +43,19 @@ if SYSTEM_INJECTION_MODE not in {"prepend", "append", "replace"}:
     SYSTEM_INJECTION_MODE = "prepend"
 MAX_INTERNAL_TOOL_ROUNDS = max(1, min(int(os.environ.get("MAX_INTERNAL_TOOL_ROUNDS", "6")), 12))
 DEBUG_IMAGE_SHAPE = os.environ.get("DEBUG_IMAGE_SHAPE", "1") == "1"
+MAX_INLINE_IMAGES = max(1, int(os.environ.get("MAX_INLINE_IMAGES", "2")))
 
 DEEPSEEK_BASE_URL = os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1").rstrip("/")
 DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY", "").strip()
+# Only names the official endpoint really serves. The relay publishes lookalikes
+# (deepseek-v4.1-flash, deepseek-v4-pro-fast) that would 404 if sent upstream.
+DEEPSEEK_OFFICIAL_NAMES = {"deepseek-flash", "deepseek-chat", "deepseek-v4-pro", "deepseek-reasoner"}
 
 
 def _direct_route(model: str):
-    """Model names starting with 'deepseek' go straight to the official endpoint."""
+    """Route only genuine official model names to the official endpoint."""
     m = str(model or "").strip().lower()
-    if DEEPSEEK_API_KEY and m.startswith("deepseek"):
+    if DEEPSEEK_API_KEY and m in DEEPSEEK_OFFICIAL_NAMES:
         return DEEPSEEK_BASE_URL, DEEPSEEK_API_KEY
     return None
 
@@ -87,6 +91,37 @@ def _resolve_model(payload: dict, default_model: str) -> str:
     return client_model or default_model
 
 
+def _is_image_part(part) -> bool:
+    return isinstance(part, dict) and part.get("type") in ("image_url", "input_image", "image")
+
+
+def _trim_images(messages: list, keep: int = None) -> list:
+    """Keep only the newest few images; older ones become a placeholder."""
+    keep = MAX_INLINE_IMAGES if keep is None else keep
+    locations = []
+    for i, msg in enumerate(messages or []):
+        content = msg.get("content")
+        if isinstance(content, list):
+            for j, part in enumerate(content):
+                if _is_image_part(part):
+                    locations.append((i, j))
+    if len(locations) <= keep:
+        return messages
+    drop = set(locations[: len(locations) - keep])
+    out = []
+    for i, msg in enumerate(messages):
+        content = msg.get("content")
+        if not isinstance(content, list):
+            out.append(msg)
+            continue
+        parts = [p for j, p in enumerate(content) if (i, j) not in drop]
+        if not parts:
+            parts = [{"type": "text", "text": "[早期的图片已省略]"}]
+        out.append({**msg, "content": parts})
+    log.info("trimmed %d stale images (kept %d)", len(drop), keep)
+    return out
+
+
 def _describe_part(part) -> str:
     """Log the shape of a content part without leaking the payload."""
     if not isinstance(part, dict):
@@ -94,7 +129,7 @@ def _describe_part(part) -> str:
     ptype = part.get("type")
     if ptype == "text":
         return "text"
-    if ptype in ("image_url", "input_image", "image"):
+    if _is_image_part(part):
         holder = part.get("image_url") or part.get("image") or part.get("source") or {}
         if isinstance(holder, str):
             url = holder
@@ -140,11 +175,7 @@ def _normalize_images(messages: list) -> list:
             continue
         parts = []
         for part in content:
-            if not isinstance(part, dict):
-                parts.append(part)
-                continue
-            ptype = part.get("type")
-            if ptype not in ("image_url", "input_image", "image"):
+            if not _is_image_part(part):
                 parts.append(part)
                 continue
             holder = part.get("image_url") or part.get("image") or {}
@@ -243,13 +274,6 @@ async def list_models(request: Request):
                             items.append(row)
         except Exception:
             log.exception("deepseek catalogue fetch failed")
-        if not any(str(i.get("id", "")).startswith("deepseek") for i in items):
-            items.append({
-                "id": "deepseek-chat", "object": "model", "owned_by": "deepseek",
-                "name": "DeepSeek-V4.1-Flash",
-                "input_modalities": ["text", "image"], "output_modalities": ["text"],
-                "context_length": 1048576, "max_output_tokens": 393216,
-            })
 
     try:
         base, key, model, extra_headers, _ = _upstream_config()
@@ -257,8 +281,14 @@ async def list_models(request: Request):
             resp = await client.get(f"{base}/models", headers=_headers(key, extra_headers))
             if resp.status_code == 200:
                 for row in (resp.json().get("data") or []):
-                    if isinstance(row, dict) and row.get("id"):
-                        items.append(row)
+                    if not isinstance(row, dict) or not row.get("id"):
+                        continue
+                    rid = str(row["id"]).strip().lower()
+                    # The relay also sells official-name lookalikes; keep them out so the
+                    # picker only shows names that really resolve somewhere.
+                    if rid in DEEPSEEK_OFFICIAL_NAMES:
+                        continue
+                    items.append(row)
             else:
                 log.warning("model catalogue fetch failed: %s", resp.status_code)
     except Exception:
@@ -468,7 +498,8 @@ async def chat_completions(request: Request):
     original_messages = list(payload.get("messages") or [])
     _log_message_shape(original_messages)
     user_text = _last_user_text(original_messages)
-    payload["messages"] = _normalize_images(_inject_system(original_messages))
+    trimmed = _trim_images(original_messages)
+    payload["messages"] = _normalize_images(_inject_system(trimmed))
     want_stream = bool(payload.get("stream", False))
 
     internal_tools = bool(
