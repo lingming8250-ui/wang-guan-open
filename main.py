@@ -69,6 +69,11 @@ def _authorized(request: Request) -> bool:
     return hmac.compare_digest(token, API_SECRET)
 
 
+def _resolve_model(payload: dict, default_model: str) -> str:
+    client_model = str(payload.get("model") or "").strip()
+    return client_model or default_model
+
+
 def _inject_system(messages: list) -> list:
     messages = list(messages or [])
     gateway_prompt = build_context().strip()
@@ -170,7 +175,7 @@ async def admin_context_preview(request: Request):
 
 async def _post_json_with_key_rotation(payload: dict):
     base, api_key, model, extra_headers, runtime_provider = _upstream_config()
-    payload["model"] = model
+    payload["model"] = _resolve_model(payload, model)
     target = f"{base}/chat/completions"
     timeout = httpx.Timeout(connect=30, read=UPSTREAM_READ_TIMEOUT, write=30, pool=30)
 
@@ -183,7 +188,7 @@ async def _post_json_with_key_rotation(payload: dict):
         for attempt in range(tries):
             if runtime_provider and attempt > 0:
                 base, api_key, model, extra_headers, runtime_provider = _upstream_config()
-                payload["model"] = model
+                payload["model"] = _resolve_model(payload, model)
                 target = f"{base}/chat/completions"
             try:
                 resp = await client.post(target, headers=_headers(api_key, extra_headers), json=payload)
@@ -344,7 +349,7 @@ async def chat_completions(request: Request):
     except RuntimeError as exc:
         return JSONResponse({"error": {"message": str(exc)}}, status_code=500)
 
-    payload["model"] = model
+    payload["model"] = _resolve_model(payload, model)
     timeout = httpx.Timeout(connect=30, read=UPSTREAM_READ_TIMEOUT, write=30, pool=30)
     target = f"{base}/chat/completions"
 
@@ -377,7 +382,7 @@ async def chat_completions(request: Request):
             else:
                 b, k, m, eh = base, api_key, model, extra_headers
             stream_payload = dict(payload)
-            stream_payload["model"] = m
+            stream_payload["model"] = _resolve_model(stream_payload, m)
             client = httpx.AsyncClient(timeout=timeout, http2=False)
             try:
                 async with client.stream("POST", f"{b}/chat/completions", headers=_headers(k, eh), json=stream_payload) as resp:
