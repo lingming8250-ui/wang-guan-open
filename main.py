@@ -491,7 +491,7 @@ app = Starlette(routes=[
     WebSocketRoute("/qq-ws", __import__("qq_bot").websocket_endpoint),
     Route("/admin/config", admin_config, methods=["GET", "PUT"]),
     Route("/admin/context-preview", admin_context_preview, methods=["GET"]),
-    Route("/admin/memories", admin_memories, methods=["GET"]),
+    Route("/admin/memories", admin_memories, methods=["GET", "POST"]),
     Route("/admin/threads", admin_threads, methods=["GET"]),
     Route("/admin/reminders", admin_reminders, methods=["GET"]),
     Route("/admin/trigger-summary", trigger_summary, methods=["POST"]),
