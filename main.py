@@ -1,4 +1,5 @@
 import os
+import re
 import json
 import hmac
 import base64
@@ -47,15 +48,23 @@ MAX_INLINE_IMAGES = max(1, int(os.environ.get("MAX_INLINE_IMAGES", "2")))
 
 DEEPSEEK_BASE_URL = os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1").rstrip("/")
 DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY", "").strip()
-# Only names the official endpoint really serves. The relay publishes lookalikes
-# (deepseek-v4.1-flash, deepseek-v4-pro-fast) that would 404 if sent upstream.
-DEEPSEEK_OFFICIAL_NAMES = {"deepseek-flash", "deepseek-chat", "deepseek-v4-pro", "deepseek-reasoner"}
+
+# Official DeepSeek names (v4-flash / v4-pro are the current names, flash / chat / reasoner
+# are the older aliases; v4-flash-vision-exp is the vision preview).
+# The relay sells lookalikes such as deepseek-v4.1-flash and deepseek-v4-pro-fast which must
+# NOT be sent upstream, so this stays an exact-match list rather than a prefix test.
+DEEPSEEK_OFFICIAL_PATTERN = re.compile(
+    r"^deepseek-(?:flash|chat|reasoner|v4-flash|v4-pro|v4-flash-vision-exp)$"
+)
+
+
+def _is_official_model(name) -> bool:
+    return bool(DEEPSEEK_OFFICIAL_PATTERN.match(str(name or "").strip().lower()))
 
 
 def _direct_route(model: str):
     """Route only genuine official model names to the official endpoint."""
-    m = str(model or "").strip().lower()
-    if DEEPSEEK_API_KEY and m in DEEPSEEK_OFFICIAL_NAMES:
+    if DEEPSEEK_API_KEY and _is_official_model(model):
         return DEEPSEEK_BASE_URL, DEEPSEEK_API_KEY
     return None
 
@@ -283,10 +292,7 @@ async def list_models(request: Request):
                 for row in (resp.json().get("data") or []):
                     if not isinstance(row, dict) or not row.get("id"):
                         continue
-                    rid = str(row["id"]).strip().lower()
-                    # The relay also sells official-name lookalikes; keep them out so the
-                    # picker only shows names that really resolve somewhere.
-                    if rid in DEEPSEEK_OFFICIAL_NAMES:
+                    if _is_official_model(row["id"]):
                         continue
                     items.append(row)
             else:
