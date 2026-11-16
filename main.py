@@ -49,13 +49,19 @@ MAX_INLINE_IMAGES = max(1, int(os.environ.get("MAX_INLINE_IMAGES", "2")))
 DEEPSEEK_BASE_URL = os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1").rstrip("/")
 DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY", "").strip()
 
-# Official DeepSeek names (v4-flash / v4-pro are the current names, flash / chat / reasoner
-# are the older aliases; v4-flash-vision-exp is the vision preview).
-# The relay sells lookalikes such as deepseek-v4.1-flash and deepseek-v4-pro-fast which must
-# NOT be sent upstream, so this stays an exact-match list rather than a prefix test.
 DEEPSEEK_OFFICIAL_PATTERN = re.compile(
     r"^deepseek-(?:flash|chat|reasoner|v4-flash|v4-pro|v4-flash-vision-exp)$"
 )
+
+# Names clients may already have saved. All of them are aliases the official endpoint accepts.
+DEEPSEEK_ALIASES = [
+    {"id": "deepseek-v4-flash", "name": "DeepSeek-V4-Flash",
+     "input_modalities": ["text", "image"]},
+    {"id": "deepseek-v4-flash-vision-exp", "name": "DeepSeek-V4-Flash-Vision-Exp",
+     "input_modalities": ["text", "image"]},
+    {"id": "deepseek-chat", "name": "DeepSeek-Chat",
+     "input_modalities": ["text", "image"]},
+]
 
 
 def _is_official_model(name) -> bool:
@@ -283,6 +289,22 @@ async def list_models(request: Request):
                             items.append(row)
         except Exception:
             log.exception("deepseek catalogue fetch failed")
+
+        # The official endpoint only lists two ids, but it accepts the older aliases too.
+        present = {str(i.get("id") or "") for i in items}
+        for alias in DEEPSEEK_ALIASES:
+            if alias["id"] in present:
+                continue
+            items.append({
+                "id": alias["id"],
+                "object": "model",
+                "owned_by": "deepseek",
+                "name": alias["name"],
+                "input_modalities": alias["input_modalities"],
+                "output_modalities": ["text"],
+                "context_window": 1048576,
+                "max_output_tokens": 393216,
+            })
 
     try:
         base, key, model, extra_headers, _ = _upstream_config()
