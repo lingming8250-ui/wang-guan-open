@@ -1,6 +1,7 @@
 import os
 import json
 import hmac
+import base64
 import logging
 import httpx
 import uvicorn
@@ -41,6 +42,7 @@ SYSTEM_INJECTION_MODE = os.environ.get("SYSTEM_INJECTION_MODE", "prepend").strip
 if SYSTEM_INJECTION_MODE not in {"prepend", "append", "replace"}:
     SYSTEM_INJECTION_MODE = "prepend"
 MAX_INTERNAL_TOOL_ROUNDS = max(1, min(int(os.environ.get("MAX_INTERNAL_TOOL_ROUNDS", "6")), 12))
+DEBUG_IMAGE_SHAPE = os.environ.get("DEBUG_IMAGE_SHAPE", "1") == "1"
 
 DEEPSEEK_BASE_URL = os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1").rstrip("/")
 DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY", "").strip()
@@ -83,6 +85,93 @@ def _authorized(request: Request) -> bool:
 def _resolve_model(payload: dict, default_model: str) -> str:
     client_model = str(payload.get("model") or "").strip()
     return client_model or default_model
+
+
+def _describe_part(part) -> str:
+    """Log the shape of a content part without leaking the payload."""
+    if not isinstance(part, dict):
+        return f"<{type(part).__name__}>"
+    ptype = part.get("type")
+    if ptype == "text":
+        return "text"
+    if ptype in ("image_url", "input_image", "image"):
+        holder = part.get("image_url") or part.get("image") or part.get("source") or {}
+        if isinstance(holder, str):
+            url = holder
+            return f"image url_str len={len(url)} scheme={url.split(':', 1)[0]}"
+        if isinstance(holder, dict):
+            url = str(holder.get("url") or "")
+            if url.startswith("data:"):
+                head = url.split(",", 1)[0]
+                return f"image data_uri head={head} len={len(url)}"
+            if url:
+                return f"image url len={len(url)} scheme={url.split(':', 1)[0]}"
+            src = holder.get("source") if isinstance(holder.get("source"), dict) else holder
+            if isinstance(src, dict):
+                stype = src.get("type")
+                data = str(src.get("data") or "")
+                return f"image source type={stype} data_len={len(data)}"
+        return "image unknown_shape"
+    return f"other:{ptype}"
+
+
+def _log_message_shape(messages: list) -> None:
+    if not DEBUG_IMAGE_SHAPE:
+        return
+    try:
+        for idx, msg in enumerate(messages or []):
+            content = msg.get("content")
+            if isinstance(content, str):
+                continue
+            if isinstance(content, list):
+                shapes = [_describe_part(p) for p in content]
+                log.info("msg[%d] role=%s parts=%s", idx, msg.get("role"), shapes)
+    except Exception:
+        log.exception("shape log failed")
+
+
+def _normalize_images(messages: list) -> list:
+    """Convert every image part to a data URI so upstreams never fetch remote URLs."""
+    out = []
+    for msg in messages or []:
+        content = msg.get("content")
+        if not isinstance(content, list):
+            out.append(msg)
+            continue
+        parts = []
+        for part in content:
+            if not isinstance(part, dict):
+                parts.append(part)
+                continue
+            ptype = part.get("type")
+            if ptype not in ("image_url", "input_image", "image"):
+                parts.append(part)
+                continue
+            holder = part.get("image_url") or part.get("image") or {}
+            url = ""
+            if isinstance(holder, str):
+                url = holder
+            elif isinstance(holder, dict):
+                url = str(holder.get("url") or "")
+            if url.startswith("data:"):
+                parts.append(part)
+                continue
+            if url.startswith("http"):
+                try:
+                    with httpx.Client(timeout=20, follow_redirects=True) as client:
+                        resp = client.get(url)
+                    if resp.status_code == 200 and resp.content:
+                        mime = resp.headers.get("content-type", "image/jpeg").split(";")[0]
+                        b64 = base64.b64encode(resp.content).decode("ascii")
+                        parts.append({"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}})
+                        log.info("inlined remote image bytes=%d mime=%s", len(resp.content), mime)
+                        continue
+                    log.warning("image download failed status=%s url_len=%d", resp.status_code, len(url))
+                except Exception:
+                    log.exception("image download failed")
+            parts.append(part)
+        out.append({**msg, "content": parts})
+    return out
 
 
 def _inject_system(messages: list) -> list:
@@ -377,8 +466,9 @@ async def chat_completions(request: Request):
         return JSONResponse({"error": {"message": "Invalid JSON"}}, status_code=400)
 
     original_messages = list(payload.get("messages") or [])
+    _log_message_shape(original_messages)
     user_text = _last_user_text(original_messages)
-    payload["messages"] = _inject_system(original_messages)
+    payload["messages"] = _normalize_images(_inject_system(original_messages))
     want_stream = bool(payload.get("stream", False))
 
     internal_tools = bool(
