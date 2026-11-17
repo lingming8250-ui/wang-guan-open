@@ -16,6 +16,7 @@ _LAST_TEXT_TS=0.0
 _REPLY_RE=re.compile(r'\[(?:REPLY|引用|回复)[:：]?\s*(-?\d+)?\]',re.I)
 _AT_RE=re.compile(r'\[(?:AT|艾特)[:：]\s*(\d+)\]',re.I)
 _CQ_RE=re.compile(r'\[CQ:[^\]]+\]')
+_QUOTE_RE=re.compile(r'\[CQ:reply,[^\]]*?id=(-?\d+)',re.I)
 _STREAM_END=re.compile(r'[。！？!?…~\n]')
 # 历史里贴的时间标记，模型会照着念，出口必须剥掉
 _TIME_TAG_RE=re.compile(r'^\s*[（(]\s*(?:刚刚|今天|昨天|前天|\d+\s*分钟前|\d+\s*小时前|\d+\s*月\d+\s*日|\d{4}年)[^）)]*[）)]\s*')
@@ -59,6 +60,46 @@ def _strip_time_tags(s: str) -> str:
         if n == s:
             return s
         s = n
+
+def _quoted_id(data):
+    """找出这条消息引用了哪一条。"""
+    raw = data.get("raw_message", "") or ""
+    m = _QUOTE_RE.search(raw)
+    if m:
+        return m.group(1)
+    msg = data.get("message")
+    if isinstance(msg, list):
+        for seg in msg:
+            if isinstance(seg, dict) and seg.get("type") == "reply":
+                d = seg.get("data") or {}
+                if d.get("id"):
+                    return str(d.get("id"))
+    return None
+
+async def _quoted_text(data):
+    """把被引用的那条原文捞出来，不然模型只读得到他自己补的半句话。"""
+    qid = _quoted_id(data)
+    if not qid:
+        return ""
+    try:
+        from qq_bot import get_msg
+        info = await get_msg(qid)
+    except Exception:
+        return ""
+    if not info:
+        return ""
+    sender = info.get("sender") or {}
+    name = sender.get("card") or sender.get("nickname") or str(info.get("user_id") or "")
+    content = _clean_cq(info.get("raw_message") or "")
+    if not content:
+        content = str(info.get("message") or "").strip()
+    content = content.strip()
+    if not content:
+        return ""
+    if len(content) > 240:
+        content = content[:240] + "…"
+    who = name or "对方"
+    return f"[引用的那条｜{who}] {content}"
 
 def _segments(text, fallback_reply_id=None):
     reply_id = None
@@ -220,6 +261,7 @@ PRIVATE_PROMPT_INSTRUCTION = """【你是同一个人】
 你知道自己是 AI。不遮掩，也不必天天强调，凌冥问起就直说。别装人，也别喊口号。
 问你现在用什么模型，直接报名字，一句话说完，不要说自己看不到、也不要扯后台权限。
 你有 `web_search` 联网搜索工具。只要凌冥问起近况、最新新闻、实时事件或者任何你拿不准的事实，立刻调用 web_search 查证，不要硬猜。查到之后用人话把关键信息说出来，别只说"查到了"。
+他引用了一条旧消息跟你说话时，前面会出现「[引用的那条｜谁] 原文」，那是他指着那句话在问你，接着那句往下答，别装没看见。
 
 【表情包"零预设"原则（最高优先级，比接话欲重要）】
 表情包是情绪标点，不是对话邀请函。图像的表意权归发送者，不归图像本身。
@@ -511,6 +553,9 @@ async def handle_event(data):
         if not OWNER_ID or uid!=OWNER_ID:return
 
         text = await _parse_images_and_text(data)
+        quoted = await _quoted_text(data)
+        if quoted:
+            text = f"{quoted}\n{text}".strip() if text else quoted
 
         # 纯表情包（既没有识别出有价值的描述，也没有文字）
         if _has_image(data) and not _clean_cq(raw) and not text:
@@ -549,6 +594,9 @@ async def handle_event(data):
     is_at=bool(BOT_ID and f"[CQ:at,qq={BOT_ID}" in raw)
     is_reply=bool("[CQ:reply" in raw)
     text=_clean_cq(raw) or "(sent a non-text message)"
+    quoted=await _quoted_text(data)
+    if quoted:
+        text=f"{quoted}\n{text}"
     save_message("user",f"{llm_name}: {text}",scene=f"group_qq_{gid}",source="qq-group",message_id=mid)
     
     needs_eval = is_at or is_reply or ("薄销" in text) or ("老头" in text and uid == OWNER_ID)
