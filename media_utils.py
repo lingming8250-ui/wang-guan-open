@@ -7,8 +7,11 @@ from __future__ import annotations
 import os,base64,tempfile,requests,asyncio,re
 from llm_channels import get_config,record_result
 
+VISION_MAX_TOKENS=int(os.getenv("VISION_MAX_TOKENS","350"))
+
 async def _vision(payload,label="vision"):
     import httpx
+    payload={**payload,"max_tokens":VISION_MAX_TOKENS}
     cfg=await asyncio.to_thread(get_config,"vision")
     extra={str(k):str(v) for k,v in (cfg.get("extra_headers") or {}).items() if str(k).lower() not in {"authorization","content-type"}}
     headers={**extra,"Authorization":f"Bearer {cfg['api_key']}","Content-Type":"application/json"}
@@ -26,9 +29,11 @@ def _download(url,headers=None):
 async def recognize_image_url(url,caption=""):
     data=await asyncio.to_thread(_download,url,{"User-Agent":"wang-guan-open/1.0"})
     b64="data:image/jpeg;base64,"+base64.b64encode(data).decode()
-    prompt="Describe the image directly. If it is a meme/sticker, explain its meaning."
-    if caption:prompt+=f" The sender also wrote: {caption!r}; use it only as context."
-    return await _vision({"max_tokens":4000,"messages":[{"role":"user","content":[{"type":"text","text":prompt},{"type":"image_url","image_url":{"url":b64}}]}]})
+    # 只要它把关键信息说清楚，不用写长文，越长越慢
+    prompt=("看图，用中文两三句话说明关键信息：是什么东西/什么场景，有文字就原样抄出来，"
+            "有价格、型号、数字、人名地名都别漏。不要客套，不要分点，不要脑补没看见的东西。")
+    if caption:prompt+=f"\n发图的人同时说了：{caption[:120]!s}"
+    return await _vision({"messages":[{"role":"user","content":[{"type":"text","text":prompt},{"type":"image_url","image_url":{"url":b64}}]}]})
 
 async def recognize_telegram_image(file_id,caption=""):
     token=os.getenv("TG_BOT_TOKEN","")
