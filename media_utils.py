@@ -9,6 +9,8 @@ from llm_channels import get_config,record_result
 
 VISION_MAX_TOKENS=int(os.getenv("VISION_MAX_TOKENS","350"))
 STICKER_MAX_TOKENS=int(os.getenv("STICKER_MAX_TOKENS","70"))
+# 识图只是配菜，绝不能把整条回复拖死：掐在 20 秒内，超了就当没看见
+VISION_TIMEOUT=float(os.getenv("VISION_TIMEOUT","20"))
 
 async def _vision(payload,label="vision",max_tokens=None):
     import httpx
@@ -17,7 +19,7 @@ async def _vision(payload,label="vision",max_tokens=None):
     extra={str(k):str(v) for k,v in (cfg.get("extra_headers") or {}).items() if str(k).lower() not in {"authorization","content-type"}}
     headers={**extra,"Authorization":f"Bearer {cfg['api_key']}","Content-Type":"application/json"}
     payload={**payload,"model":cfg["model"]}
-    async with httpx.AsyncClient(timeout=90,http2=False) as c:
+    async with httpx.AsyncClient(timeout=VISION_TIMEOUT,http2=False) as c:
         r=await c.post(cfg["base_url"]+"/chat/completions",headers=headers,json=payload)
     if r.status_code>=400:
         record_result(cfg.get("config_id"),False,"vision");raise RuntimeError(f"vision HTTP {r.status_code}: {r.text[:300]}")
@@ -25,13 +27,18 @@ async def _vision(payload,label="vision",max_tokens=None):
     return r.json()["choices"][0]["message"]["content"].strip()
 
 def _download(url,headers=None):
-    r=requests.get(url,headers=headers or {},timeout=40);r.raise_for_status();return r.content
+    r=requests.get(url,headers=headers or {},timeout=15);r.raise_for_status();return r.content
 
 STICKER_PROMPT=("这是一张表情包/贴图。只回一句：它表达什么情绪或什么意思，二十字以内。"
                 "不要描述画面细节，不要分点，不要客套。")
 
 async def recognize_image_url(url,caption="",sticker=False):
-    data=await asyncio.to_thread(_download,url,{"User-Agent":"wang-guan-open/1.0"})
+    try:
+        data=await asyncio.wait_for(asyncio.to_thread(_download,url,{"User-Agent":"wang-guan-open/1.0"}),timeout=VISION_TIMEOUT)
+    except Exception:
+        return ""
+    if not data:
+        return ""
     b64="data:image/jpeg;base64,"+base64.b64encode(data).decode()
     if sticker:
         return await _vision({"messages":[{"role":"user","content":[{"type":"text","text":STICKER_PROMPT},{"type":"image_url","image_url":{"url":b64}}]}]},max_tokens=STICKER_MAX_TOKENS)
