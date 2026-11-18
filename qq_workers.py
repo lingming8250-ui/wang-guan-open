@@ -265,6 +265,7 @@ PRIVATE_PROMPT_INSTRUCTION = """【你是同一个人】
 
 【表情包"零预设"原则（最高优先级，比接话欲重要）】
 表情包是情绪标点，不是对话邀请函。图像的表意权归发送者，不归图像本身。
+后台会给你一句它大概什么意思，你知道就行，别念出来。
 - 有文字+表情包：只回文字，表情包当没看见。
 - 只发表情包：接着聊原来的话题；如果话题本来就停了，一句"嗯？""咋了"轻轻带过，不展开。
 - 连续刷好几个：当他在打字前热身，别逐个接，别表演。
@@ -487,65 +488,72 @@ async def _group_reply(gid, last_msg_id=None):
         if _group_pending.get(gid) is task:_group_pending.pop(gid,None)
 
 def _is_sticker(d) -> bool:
-    """QQ 图片段里 sub_type=1 或 summary 带"表情"的，就是表情包，不值得送识图。"""
+    """QQ 图片段里 sub_type=1 或 summary 带"表情"的，就是表情包。"""
     d = d or {}
     if str(d.get("sub_type") or "") in ("1", "sticker"):
         return True
     summary = str(d.get("summary") or "")
     return any(k in summary for k in ("表情", "动画", "mface"))
 
-async def _parse_images_and_text(data):
-    """图片解析：表情包直接跳过识图，正常截图/照片才调 Vision。"""
+def _collect_images(data):
+    """收集图片地址，标出哪张是表情包。"""
     raw = data.get("raw_message", "") or ""
     message = data.get("message")
-    img_urls = []
-
+    found = []  # [(url_or_file, is_sticker)]
     if isinstance(message, list):
         for seg in message:
             if isinstance(seg, dict) and seg.get("type") == "image":
                 d = seg.get("data") or {}
-                if _is_sticker(d):
-                    continue
-                u = d.get("url") or d.get("file")
-                if u and str(u).startswith("http"):
-                    img_urls.append(str(u))
-                elif d.get("file"):
-                    try:
-                        from qq_bot import get_image
-                        img_info = await get_image(d.get("file"))
-                        if img_info and img_info.get("url"):
-                            img_urls.append(img_info["url"])
-                    except Exception:pass
-    else:
-        for m in re.finditer(r'\[CQ:image,[^\]]*?(?:url=([^,\]]+)|file=([^,\]]+))[^\]]*?\]', raw, re.I):
-            whole = m.group(0)
-            if "sub_type=1" in whole or "动画表情" in whole or "summary=[表情" in whole:
-                continue
-            u = m.group(1) or m.group(2)
-            if u and u.startswith("http"):
-                img_urls.append(u)
+                found.append((d.get("url") or d.get("file"), _is_sticker(d)))
+        return found
+    for m in re.finditer(r'\[CQ:image,[^\]]*?(?:url=([^,\]]+)|file=([^,\]]+))[^\]]*?\]', raw, re.I):
+        whole = m.group(0)
+        sticker = "sub_type=1" in whole or "动画表情" in whole or "表情" in whole
+        found.append((m.group(1) or m.group(2), sticker))
+    return found
 
-    clean_text = _clean_cq(raw)
-    if not img_urls:
+async def _parse_images_and_text(data):
+    """图片解析：表情包走轻量识图（一句话），正常截图/照片走完整识图。"""
+    found = _collect_images(data)
+    clean_text = _clean_cq(raw_text := (data.get("raw_message", "") or ""))
+
+    if not found:
+        return clean_text
+
+    url, sticker = None, False
+    for u, s in found:
+        if u and str(u).startswith("http"):
+            url, sticker = str(u), s
+            break
+    if url is None:
+        for u, s in found:
+            if not u:
+                continue
+            try:
+                from qq_bot import get_image
+                info = await get_image(u)
+                if info and info.get("url"):
+                    url, sticker = info["url"], s
+                    break
+            except Exception:
+                continue
+    if not url:
         return clean_text
 
     desc = ""
-    # 只要有真图，就尝试用 vision 识图（不管是配了字还是单纯发图问"看到了吗"）
     try:
         from media_utils import recognize_image_url
-        desc = await recognize_image_url(img_urls[0], caption=clean_text)
+        desc = await recognize_image_url(url, caption=clean_text, sticker=sticker)
     except Exception as exc:
         import logging
         logging.getLogger(__name__).warning("recognize_image_url failed: %s", exc)
         desc = ""
 
     if desc and clean_text:
-        return f"{clean_text}\n[附图内容: {desc}]"
+        return f"{clean_text}\n[{'表情包' if sticker else '附图'}内容: {desc}]"
     elif desc:
-        return f"[发来的附图/商品截图内容: {desc}]"
-    elif clean_text:
-        return clean_text
-    return ""
+        return f"[发来的{'表情包' if sticker else '附图/商品截图'}内容: {desc}]"
+    return clean_text
 
 
 def _has_image(data) -> bool:
@@ -555,18 +563,6 @@ def _has_image(data) -> bool:
     msg = data.get("message")
     if isinstance(msg, list):
         return any(isinstance(s, dict) and s.get("type") == "image" for s in msg)
-    return False
-
-
-def _has_real_image(data) -> bool:
-    """除表情包之外，还夹着真的图片吗。"""
-    raw = data.get("raw_message", "") or ""
-    msg = data.get("message")
-    if isinstance(msg, list):
-        return any(
-            isinstance(s, dict) and s.get("type") == "image" and not _is_sticker(s.get("data") or {})
-            for s in msg
-        )
     return False
 
 
@@ -582,11 +578,11 @@ async def handle_event(data):
         if quoted:
             text = f"{quoted}\n{text}".strip() if text else quoted
 
-        # 纯表情包（没有真图、也没有文字）
-        if _has_image(data) and not _has_real_image(data) and not _clean_cq(raw) and not text:
-            save_message("user","[QQ] [表情包]",scene="message",source="qq",message_id=mid)
+        # 只发了表情包、没打字：看一眼就收，不主动接梗
+        if _has_image(data) and not _clean_cq(raw):
+            save_message("user",f"[QQ] {text or '[表情包]'}",scene="message",source="qq",message_id=mid)
             try:
-                topic_note("message","user","[表情包]")
+                topic_note("message","user",text or "[表情包]")
             except Exception:
                 pass
             if _private_pending and not _private_pending.done():
