@@ -8,10 +8,11 @@ import os,base64,tempfile,requests,asyncio,re
 from llm_channels import get_config,record_result
 
 VISION_MAX_TOKENS=int(os.getenv("VISION_MAX_TOKENS","350"))
+STICKER_MAX_TOKENS=int(os.getenv("STICKER_MAX_TOKENS","70"))
 
-async def _vision(payload,label="vision"):
+async def _vision(payload,label="vision",max_tokens=None):
     import httpx
-    payload={**payload,"max_tokens":VISION_MAX_TOKENS}
+    payload={**payload,"max_tokens":max_tokens or VISION_MAX_TOKENS}
     cfg=await asyncio.to_thread(get_config,"vision")
     extra={str(k):str(v) for k,v in (cfg.get("extra_headers") or {}).items() if str(k).lower() not in {"authorization","content-type"}}
     headers={**extra,"Authorization":f"Bearer {cfg['api_key']}","Content-Type":"application/json"}
@@ -26,9 +27,14 @@ async def _vision(payload,label="vision"):
 def _download(url,headers=None):
     r=requests.get(url,headers=headers or {},timeout=40);r.raise_for_status();return r.content
 
-async def recognize_image_url(url,caption=""):
+STICKER_PROMPT=("这是一张表情包/贴图。只回一句：它表达什么情绪或什么意思，二十字以内。"
+                "不要描述画面细节，不要分点，不要客套。")
+
+async def recognize_image_url(url,caption="",sticker=False):
     data=await asyncio.to_thread(_download,url,{"User-Agent":"wang-guan-open/1.0"})
     b64="data:image/jpeg;base64,"+base64.b64encode(data).decode()
+    if sticker:
+        return await _vision({"messages":[{"role":"user","content":[{"type":"text","text":STICKER_PROMPT},{"type":"image_url","image_url":{"url":b64}}]}]},max_tokens=STICKER_MAX_TOKENS)
     # 只要它把关键信息说清楚，不用写长文，越长越慢
     prompt=("看图，用中文两三句话说明关键信息：是什么东西/什么场景，有文字就原样抄出来，"
             "有价格、型号、数字、人名地名都别漏。不要客套，不要分点，不要脑补没看见的东西。")
