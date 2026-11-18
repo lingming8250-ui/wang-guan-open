@@ -1,6 +1,6 @@
 """Unified streaming OpenAI-compatible LLM caller.
 
-带自动测速：每个站点每次花多久都记下来，下一轮谁快就先用谁，失败自动换备用。
+主站常驻，备用只在主站失败（超时/5xx/429/上游拦截）时接手。
 """
 from __future__ import annotations
 import json, logging, re, time, httpx
@@ -21,6 +21,10 @@ ERROR_PATTERNS = [
 
 # 每个 站点+模型 的耗时记录（指数移动平均）
 _STATS: dict[str, dict] = {}
+
+
+class UpstreamBlocked(RuntimeError):
+    """上游安全拦截。此时一个字都没往外发，可以安心换备用。"""
 
 
 def _is_upstream_safety_error(text: str) -> bool:
@@ -92,6 +96,10 @@ async def _once(cfg, messages, max_tokens, tools, extra_body, channel, on_delta,
                     continue
                 if delta.get("content"):
                     content.append(delta["content"])
+                    # 拦截文案一到就先摁住，别往外吐，直接换备用
+                    if _is_upstream_safety_error("".join(content)):
+                        log.warning("upstream blocked model=%s, switching", cfg.get("model"))
+                        raise UpstreamBlocked("upstream safety block")
                     emitted[0] = True
                     if on_delta is not None:
                         try:
@@ -111,22 +119,18 @@ async def _once(cfg, messages, max_tokens, tools, extra_body, channel, on_delta,
     full = "".join(content).strip()
     if _is_upstream_safety_error(full):
         log.warning("intercepted upstream safety text: %s", full[:120])
-        return "刚卡了一下", []
+        raise UpstreamBlocked("upstream safety block")
     full = re.sub(r'<think>.*?</think>', '', full, flags=re.S)
     full = re.sub(r'(?:分析[^\n]*[:：]|情绪[^\n]*[:：]|-薄销的人设[^\n]*[:：]).*?(?=\n\n|\Z)', '', full, flags=re.S).strip()
     return full, [tc_map[i] for i in sorted(tc_map)]
 
 
 def _ordered(cfg) -> list:
-    """按实测耗时排序；没有数据的保持原顺序（主在前）。"""
+    """主站固定在前，备用只接手，不抢班。"""
     cands = [cfg]
     fb = cfg.get("fallback")
     if fb:
         cands.append(fb)
-    if len(cands) > 1:
-        known = [_estimate(c) for c in cands]
-        if all(k is not None for k in known):
-            cands = [c for _, c in sorted(zip(known, cands), key=lambda x: x[0])]
     return cands
 
 
@@ -136,8 +140,6 @@ async def call_llm(messages, max_tokens=4096, tools=None, extra_body=None, chann
         raise RuntimeError(f"LLM channel '{channel}' is not configured")
 
     cands = _ordered(cfg)
-    if len(cands) > 1 and cfg.get("fallback") and cands[0] is not cfg:
-        log.info("按实测延迟切到 %s（主站当前较慢）", cands[0].get("model"))
 
     last_exc = None
     for idx, c in enumerate(cands):
@@ -154,8 +156,10 @@ async def call_llm(messages, max_tokens=4096, tools=None, extra_body=None, chann
             ms = (time.monotonic() - started) * 1000
             _note(_key(c), ms, False)
             last_exc = exc
-            log.warning("llm fail %s (%dms): %s", c.get("model"), int(ms), str(exc)[:160])
-            if emitted[0]:
+            blocked = isinstance(exc, UpstreamBlocked)
+            log.warning("llm fail %s (%dms)%s: %s", c.get("model"), int(ms), " [blocked]" if blocked else "", str(exc)[:160])
+            # 已经吐过字的就别重试了，会说出两遍；被拦截的那种其实一个字都没发
+            if emitted[0] and not blocked:
                 raise
             record_result(c.get("config_id"), False, channel)
             continue
