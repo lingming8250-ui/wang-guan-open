@@ -1,20 +1,20 @@
 """Generic media helpers for vision, STT and TTS.
 
-图不再先翻译成文字：压一把，直接给主模型看。
-这里只负责三件事：下载、压、转 data URI。
+回到最初版本：识图与聊天彻底解耦。
+单张图片走干净的专用提示词，完全不附带任何敏感人设，彻底避开 Google 审核拦截。
+仅额外保留图片压缩，避免原图几兆导致超时卡死。
 """
 from __future__ import annotations
 import os,io,base64,tempfile,requests,asyncio,re
+from llm_channels import get_config,record_result
 
-VISION_MAX_EDGE=int(os.getenv("VISION_MAX_EDGE","1024"))
+VISION_MAX_EDGE=int(os.getenv("VISION_MAX_EDGE","1280"))
 VISION_JPEG_QUALITY=int(os.getenv("VISION_JPEG_QUALITY","85"))
-IMAGE_FETCH_TIMEOUT=float(os.getenv("IMAGE_FETCH_TIMEOUT","20"))
 
-def _download(url,headers=None,timeout=20):
-    r=requests.get(url,headers=headers or {},timeout=timeout);r.raise_for_status();return r.content
+def _download(url,headers=None):
+    r=requests.get(url,headers=headers or {},timeout=20);r.raise_for_status();return r.content
 
 def _shrink(data: bytes) -> bytes:
-    """长边缩到 VISION_MAX_EDGE，转 JPEG。没有 Pillow 就原样返回。"""
     try:
         from PIL import Image
     except Exception:
@@ -31,25 +31,30 @@ def _shrink(data: bytes) -> bytes:
         buf=io.BytesIO()
         im.save(buf,format="JPEG",quality=VISION_JPEG_QUALITY,optimize=True)
         out=buf.getvalue()
-        return out or data
+        return out if out else data
     except Exception:
         return data
 
-async def fetch_image_data_uri(url) -> str:
-    """下回来、压小、转成 data:image/jpeg;base64,... 直接塞进对话用。"""
-    if not url or not str(url).startswith("http"):
-        return ""
-    try:
-        data=await asyncio.wait_for(
-            asyncio.to_thread(_download,url,{"User-Agent":"wang-guan-open/1.0"},IMAGE_FETCH_TIMEOUT),
-            timeout=IMAGE_FETCH_TIMEOUT,
-        )
-    except Exception:
-        return ""
-    if not data:
-        return ""
+async def _vision(payload,label="vision"):
+    import httpx
+    cfg=await asyncio.to_thread(get_config,"vision")
+    extra={str(k):str(v) for k,v in (cfg.get("extra_headers") or {}).items() if str(k).lower() not in {"authorization","content-type"}}
+    headers={**extra,"Authorization":f"Bearer {cfg['api_key']}","Content-Type":"application/json"}
+    payload={**payload,"model":cfg["model"]}
+    async with httpx.AsyncClient(timeout=40,http2=False) as c:
+        r=await c.post(cfg["base_url"]+"/chat/completions",headers=headers,json=payload)
+    if r.status_code>=400:
+        record_result(cfg.get("config_id"),False,"vision");raise RuntimeError(f"vision HTTP {r.status_code}: {r.text[:300]}")
+    record_result(cfg.get("config_id"),True,"vision")
+    return r.json()["choices"][0]["message"]["content"].strip()
+
+async def recognize_image_url(url,caption=""):
+    data=await asyncio.to_thread(_download,url,{"User-Agent":"wang-guan-open/1.0"})
     small=await asyncio.to_thread(_shrink,data)
-    return "data:image/jpeg;base64,"+base64.b64encode(small).decode()
+    b64="data:image/jpeg;base64,"+base64.b64encode(small).decode()
+    prompt="Describe the image directly and comprehensively. If there is text or numbers, transcribe them accurately. If it is a meme/sticker, explain its meaning and emotion."
+    if caption:prompt+=f" The sender also wrote: {caption!r}; use it only as context."
+    return await _vision({"max_tokens":1200,"messages":[{"role":"user","content":[{"type":"text","text":prompt},{"type":"image_url","image_url":{"url":b64}}]}]})
 
 async def recognize_telegram_image(file_id,caption=""):
     token=os.getenv("TG_BOT_TOKEN","")
@@ -57,7 +62,7 @@ async def recognize_telegram_image(file_id,caption=""):
     info=await asyncio.to_thread(lambda:requests.get(f"https://api.telegram.org/bot{token}/getFile",params={"file_id":file_id},timeout=10).json())
     path=(info.get("result") or {}).get("file_path","")
     if not path:return ""
-    return await fetch_image_data_uri(f"https://api.telegram.org/file/bot{token}/{path}")
+    return await recognize_image_url(f"https://api.telegram.org/file/bot{token}/{path}",caption)
 
 async def transcribe_url(url,filename="audio.ogg"):
     key=os.getenv("STT_API_KEY",os.getenv("OPENAI_API_KEY","")).strip()
