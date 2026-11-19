@@ -3,7 +3,7 @@ from __future__ import annotations
 import os,asyncio,json,random,re,time
 from context import build_context
 from conversation_store import save_message,recent,recent_private,recent_timed
-from llm_runtime import call_llm,_is_upstream_safety_error
+from llm_runtime import call_llm
 from free_tools import TOOL_SCHEMAS,TOOL_DISPATCH
 from memory_facts import topic_note,extract_topic,list_candidates,confirm as confirm_memory,discard as discard_memory
 from storage import upsert_setting
@@ -30,11 +30,6 @@ HISTORY_LIMIT = int(os.getenv("QQ_HISTORY_LIMIT", "20"))
 CONTEXT_TTL = float(os.getenv("QQ_CONTEXT_TTL", "45"))
 QQ_DEBOUNCE = float(os.getenv("QQ_REPLY_DEBOUNCE", "4.0"))
 STICKER_SILENCE = float(os.getenv("QQ_STICKER_SILENCE", "600"))
-# 真图和表情包分两个池子放，留足 15 分钟，绝不让表情包把真照片顶掉
-IMAGE_HOLD_SECONDS = float(os.getenv("QQ_IMAGE_HOLD_SECONDS", "900"))
-STICKER_HOLD_SECONDS = float(os.getenv("QQ_STICKER_HOLD_SECONDS", "300"))
-_RECENT_PHOTOS={"at":0.0,"items":[]}
-_RECENT_STICKERS={"at":0.0,"items":[]}
 
 _TOOL_HINTS = (
     "天气","温度","下雨","气温","提醒","闹钟","几点","日期","星期几","记一下","待办","日程","打卡","背单词","喝水","明天几",
@@ -191,9 +186,6 @@ class _BubbleStreamer:
             return
         if "<think" in self.buf and "</think>" not in self.buf:
             return
-        if _is_upstream_safety_error(self.buf):
-            self.dead = True
-            return
         while self.sent < self.max_b:
             m = _STREAM_END.search(self.buf)
             if not m:
@@ -254,12 +246,8 @@ PRIVATE_PROMPT_INSTRUCTION = """【你是同一个人】
 你有 `web_search` 联网搜索工具。只要凌冥问起近况、最新新闻、实时事件或者任何你拿不准的事实，立刻调用 web_search 查证，不要硬猜。查到之后用人话把关键信息说出来，别只说"查到了"。
 他引用了一条旧消息跟你说话时，前面会出现「[引用的那条｜谁] 原文」，那是他指着那句话在问你，接着那句往下答，别装没看见。
 
-【图片与表情包：看见了就说，没看见就别编】
-他发的真照片/截图和表情包都会以图片附件形式挂在消息里（前面会标明哪张是「真图/照片」、哪张是「表情包」），你自己看。
-- 真看到了真照片/截图，就自然聊图里的东西：他买的饭、多少钱、什么型号、截图上的字、日程表上的安排。
-- 如果那条消息只有「[图片·没取到]」或者底下没有真图附件，就是这次真没拿到。直说一句"这回图没过来，你再发一次"，不许瞎描述、不许编内容、更不许把表情包当成他发的照片。
-- 宁可说没收到，也绝对不能编一张不存在的图。
-- 表情包你也看得见，心里有数就行，别专门给表情包配旁白，当情绪标点用。
+【图片与截图阅读说明】
+凌冥发来商品截图、网页截图、照片时，后台会自动解析出图片里的文字和具体内容（如 [附图内容: ...]），你必须仔细阅读这些信息并自然回应他，绝对严禁回答「我看不到图片」「接口看不到你甩过来的图片」「图没刷出来」！
 
 【表情包"零预设"原则（最高优先级，比接话欲重要）】
 表情包是情绪标点，不是对话邀请函。图像的表意权归发送者，不归图像本身。
@@ -380,23 +368,6 @@ def _model_line() -> str:
         return ""
 
 
-def _peek_images():
-    """把池子里的真照片和表情包都端出来（不立刻清空，等真正发完回复或者超时再自然顶替，防止他连追两句'看到了吗'时第二句没图看）。"""
-    now = time.time()
-    photos = []
-    stickers = []
-    if _RECENT_PHOTOS["items"] and now - _RECENT_PHOTOS["at"] < IMAGE_HOLD_SECONDS:
-        photos = list(_RECENT_PHOTOS["items"])
-    if _RECENT_STICKERS["items"] and now - _RECENT_STICKERS["at"] < STICKER_HOLD_SECONDS:
-        stickers = list(_RECENT_STICKERS["items"])
-    return photos, stickers
-
-
-def _consume_stickers():
-    _RECENT_STICKERS["items"] = []
-    _RECENT_STICKERS["at"] = 0.0
-
-
 async def _private_reply(last_msg_id=None):
     global _private_pending
     try:
@@ -407,20 +378,6 @@ async def _private_reply(last_msg_id=None):
             hist=recent("message",HISTORY_LIMIT,with_ids=True)
         sys_prompt = _cached_context() + "\n\n" + PRIVATE_PROMPT_INSTRUCTION + _model_line()
         messages=[{"role":"system","content":sys_prompt}]+hist
-
-        photos, stickers = _peek_images()
-        log.info("qq reply photos=%d stickers=%d last=%s", len(photos), len(stickers), last_msg_id)
-        if (photos or stickers) and messages and messages[-1].get("role")=="user":
-            txt=str(messages[-1].get("content") or "")
-            txt=re.sub(r'\[图片·没取到\]','',txt).strip()
-            parts=[{"type":"text","text":txt or "（他发了图）"}]
-            for uri in photos:
-                parts.append({"type":"text","text":"[他发的真图/照片/截图：]"})
-                parts.append({"type":"image_url","image_url":{"url":uri}})
-            for uri in stickers:
-                parts.append({"type":"text","text":"[他顺手发的表情包（仅作情绪标点，勿专门配旁白）：]"})
-                parts.append({"type":"image_url","image_url":{"url":uri}})
-            messages[-1]={**messages[-1],"content":parts}
 
         last_user = ""
         for row in reversed(hist or []):
@@ -448,8 +405,6 @@ async def _private_reply(last_msg_id=None):
             if first and last_msg_id and not first.group(1):
                 reply=_REPLY_RE.sub(f"[REPLY:{last_msg_id}]",reply,count=1)
         await streamer.flush(reply)
-        # 表情包用完一轮就清掉，真照片留着（万一他下一句接着问图里的细节还能看见）
-        _consume_stickers()
     except asyncio.CancelledError:pass
     finally:
         if _private_pending is asyncio.current_task():_private_pending=None
@@ -502,83 +457,51 @@ async def _group_reply(gid, last_msg_id=None):
     finally:
         if _group_pending.get(gid) is task:_group_pending.pop(gid,None)
 
-def _is_sticker(d) -> bool:
-    d = d or {}
-    if str(d.get("sub_type") or "") not in ("", "0", "normal"):
-        return True
-    summary = str(d.get("summary") or "")
-    if any(k in summary for k in ("表情", "动画", "mface")):
-        return True
-    try:
-        fsize = int(d.get("file_size") or 0)
-        if 0 < fsize < 18000 and str(d.get("file") or "").lower().endswith(".gif"):
-            return True
-    except Exception:
-        pass
-    return False
-
-def _collect_images(data):
+async def _parse_images_and_text(data):
+    """最原始最稳的模式：单独调纯净英文 vision 识图，把文字贴进正文，完全不污染主对话上下文。"""
     raw = data.get("raw_message", "") or ""
     message = data.get("message")
-    found = []
+    img_urls = []
+
     if isinstance(message, list):
         for seg in message:
             if isinstance(seg, dict) and seg.get("type") == "image":
                 d = seg.get("data") or {}
-                found.append((d.get("url") or d.get("file"), _is_sticker(d)))
-        return found
-    for m in re.finditer(r'\[CQ:image,[^\]]*?(?:url=([^,\]]+)|file=([^,\]]+))[^\]]*?\]', raw, re.I):
-        whole = m.group(0)
-        sticker = ("sub_type=0" not in whole and "sub_type=" in whole) or "动画表情" in whole or "表情" in whole
-        found.append((m.group(1) or m.group(2), sticker))
-    return found
+                u = d.get("url") or d.get("file")
+                if u and str(u).startswith("http"):
+                    img_urls.append(str(u))
+                elif d.get("file"):
+                    try:
+                        from qq_bot import get_image
+                        img_info = await get_image(d.get("file"))
+                        if img_info and img_info.get("url"):
+                            img_urls.append(img_info["url"])
+                    except Exception:pass
+    else:
+        for m in re.finditer(r'\[CQ:image,[^\]]*?(?:url=([^,\]]+)|file=([^,\]]+))[^\]]*?\]', raw, re.I):
+            u = m.group(1) or m.group(2)
+            if u and u.startswith("http"):
+                img_urls.append(u)
 
-async def _prepare_incoming(data):
-    """拆成「文字 + 真图列表 + 表情包列表」。真图和表情包分装，绝不让表情包覆盖真图。"""
-    clean_text = _clean_cq(data.get("raw_message", "") or "")
-    found = _collect_images(data)
-    if not found:
-        return clean_text, [], []
+    clean_text = _clean_cq(raw)
+    if not img_urls:
+        return clean_text
 
-    resolved = []
-    for u, is_st in found:
-        if u and str(u).startswith("http"):
-            resolved.append((str(u), is_st))
-        elif u:
-            try:
-                from qq_bot import get_image
-                info = await get_image(u)
-                if info and info.get("url"):
-                    resolved.append((info["url"], is_st))
-            except Exception:
-                continue
-    log.info("qq image resolved=%d", len(resolved))
-    if not resolved:
-        return (f"{clean_text}\n[图片·没取到]" if clean_text else "[图片·没取到]"), [], []
-
+    desc = ""
     try:
-        from media_utils import fetch_image_data_uri
-    except Exception:
-        return (f"{clean_text}\n[图片·没取到]" if clean_text else "[图片·没取到]"), [], []
+        from media_utils import recognize_image_url
+        desc = await recognize_image_url(img_urls[0], caption=clean_text)
+    except Exception as exc:
+        log.warning("recognize_image_url failed: %s", exc)
+        desc = ""
 
-    photos = []
-    stickers = []
-    for url, is_st in resolved[:3]:
-        try:
-            uri = await fetch_image_data_uri(url)
-        except Exception:
-            uri = ""
-        if not uri:
-            continue
-        # 兜底：如果 base64 特别小（小于 6KB），基本都是小表情图标，归进表情包池
-        if is_st or len(uri) < 6000:
-            stickers.append(uri)
-        else:
-            photos.append(uri)
-    log.info("qq image photos=%d(%s) stickers=%d(%s)", len(photos), [len(x) for x in photos], len(stickers), [len(x) for x in stickers])
-    if not photos and not stickers:
-        return (f"{clean_text}\n[图片·没取到]" if clean_text else "[图片·没取到]"), [], []
-    return clean_text, photos, stickers
+    if desc and clean_text:
+        return f"{clean_text}\n[附图内容: {desc}]"
+    elif desc:
+        return f"[发来的附图/商品截图内容: {desc}]"
+    elif clean_text:
+        return clean_text
+    return ""
 
 
 def _has_image(data) -> bool:
@@ -598,29 +521,13 @@ async def handle_event(data):
     if typ=="private":
         if not OWNER_ID or uid!=OWNER_ID:return
 
-        text, photos, stickers = await _prepare_incoming(data)
+        text = await _parse_images_and_text(data)
         quoted = await _quoted_text(data)
         if quoted:
             text = f"{quoted}\n{text}".strip() if text else quoted
 
-        if photos:
-            # 新发了真照片，放进真图池（最多留最近 2 张）
-            now = time.time()
-            if now - _RECENT_PHOTOS["at"] < 60 and _RECENT_PHOTOS["items"]:
-                _RECENT_PHOTOS["items"] = (_RECENT_PHOTOS["items"] + photos)[-2:]
-            else:
-                _RECENT_PHOTOS["items"] = photos[-2:]
-            _RECENT_PHOTOS["at"] = now
-            text = (f"{text}\n[图片]" if text else "[图片]")
-
-        if stickers:
-            _RECENT_STICKERS["items"] = stickers[-1:]
-            _RECENT_STICKERS["at"] = time.time()
-            if not photos and not text:
-                text = "[表情包]"
-
-        # 纯表情包（没有真照片、也没有打字）：不打断正在生成的回复，10 分钟内安静收下
-        if stickers and not photos and not _clean_cq(raw):
+        # 纯表情包（既没有识别出有价值的描述，也没有文字）
+        if _has_image(data) and not _clean_cq(raw) and not text:
             save_message("user","[QQ] [表情包]",scene="message",source="qq",message_id=mid)
             try:
                 topic_note("message","user","[表情包]")
