@@ -8,6 +8,9 @@ from free_tools import TOOL_SCHEMAS,TOOL_DISPATCH
 from memory_facts import topic_note,extract_topic,list_candidates,confirm as confirm_memory,discard as discard_memory
 from storage import upsert_setting
 from llm_channels import clear_cache,get_config
+import logging
+
+log=logging.getLogger(__name__)
 
 BOT_ID=os.getenv("QQ_BOT_ID","");BOT_NAME=os.getenv("QQ_BOT_NAME","薄销");OWNER_ID=os.getenv("QQ_OWNER_ID","");OWNER_ALIAS=os.getenv("OWNER_ALIAS","凌冥")
 GROUP_IDS={x.strip() for x in os.getenv("QQ_GROUP_IDS","").split(",") if x.strip()}
@@ -18,7 +21,6 @@ _AT_RE=re.compile(r'\[(?:AT|艾特)[:：]\s*(\d+)\]',re.I)
 _CQ_RE=re.compile(r'\[CQ:[^\]]+\]')
 _QUOTE_RE=re.compile(r'\[CQ:reply,[^\]]*?id=(-?\d+)',re.I)
 _STREAM_END=re.compile(r'[。！？!?…~\n]')
-# 历史里贴的时间标记，模型会照着念，出口必须剥掉
 _TIME_TAG_RE=re.compile(r'^\s*[（(]\s*(?:刚刚|今天|昨天|前天|\d+\s*分钟前|\d+\s*小时前|\d+\s*月\d+\s*日|\d{4}年)[^）)]*[）)]\s*')
 
 MIN_BUBBLES = 1
@@ -26,15 +28,14 @@ MAX_BUBBLES = 5
 QQ_MAX_TOKENS = int(os.getenv("QQ_MAX_TOKENS", "700"))
 HISTORY_LIMIT = int(os.getenv("QQ_HISTORY_LIMIT", "20"))
 CONTEXT_TTL = float(os.getenv("QQ_CONTEXT_TTL", "45"))
-# 等他把话打完：这几秒内再来新消息就取消重排，只回最后那一串
 QQ_DEBOUNCE = float(os.getenv("QQ_REPLY_DEBOUNCE", "4.0"))
-# 纯表情包在这么久之内的对话里保持沉默
 STICKER_SILENCE = float(os.getenv("QQ_STICKER_SILENCE", "600"))
-# 当前这条消息带的真图（内存里放一会儿，回完就丢）
+# 图挂在内存里等回复。他先发图、过几秒再发字，图不能因为换了条消息就丢
+IMAGE_HOLD_SECONDS = float(os.getenv("QQ_IMAGE_HOLD_SECONDS", "180"))
 _CURRENT_IMAGES={}
-_CURRENT_IMAGES_MAX=8
+_IMAGES_MAX=8
+_RECENT_IMAGES={"at":0.0,"items":[]}
 
-# 触发挂载工具列表的关键词（含联网搜、天气、提醒等）
 _TOOL_HINTS = (
     "天气","温度","下雨","气温","提醒","闹钟","几点","日期","星期几","记一下","待办","日程","打卡","背单词","喝水","明天几",
     "搜","查","搜一下","查一下","帮我搜","帮我查","看下新闻","热搜","最近","最新","现在什么情况","发生了什么","你知道.*吗"
@@ -65,7 +66,6 @@ def _strip_time_tags(s: str) -> str:
         s = n
 
 def _quoted_id(data):
-    """找出这条消息引用了哪一条。"""
     raw = data.get("raw_message", "") or ""
     m = _QUOTE_RE.search(raw)
     if m:
@@ -80,7 +80,6 @@ def _quoted_id(data):
     return None
 
 async def _quoted_text(data):
-    """把被引用的那条原文捞出来，不然模型只读得到他自己补的半句话。"""
     qid = _quoted_id(data)
     if not qid:
         return ""
@@ -121,12 +120,6 @@ def _segments(text, fallback_reply_id=None):
     return seg if (reply_id or _AT_RE.search(text)) else text.strip()
 
 def _split_into_bubbles(text: str, max_b: int = MAX_BUBBLES) -> list[str]:
-    """严格遵循：
-    1. 换行即分气泡（无论单回车还是多回车）
-    2. 如果只有一个长段落，按换行/句号/感叹号/问号等标点拆成自然短句
-    3. 保留正常的逗号、句号、感叹号、问号等标点符号，严禁通篇用空格代替标点
-    4. 每一句话一个独立气泡！
-    """
     raw_lines = [l.strip() for l in re.split(r'[\r\n]+', text.strip()) if l.strip()]
     bubbles = []
     for line in raw_lines:
@@ -153,8 +146,6 @@ def _split_into_bubbles(text: str, max_b: int = MAX_BUBBLES) -> list[str]:
 
 
 class _BubbleStreamer:
-    """边生成边发：凑够一句就发一个气泡，剩下的收尾时补。"""
-
     def __init__(self, send_fn, scene: str, scope: str, target: int, max_b: int = 4, gap: float = 0.45):
         self.send_fn = send_fn
         self.scene = scene
@@ -187,8 +178,7 @@ class _BubbleStreamer:
             pass
         ok = await self.send_fn(self.scope, self.target, seg)
         if not ok:
-            import logging
-            logging.getLogger(__name__).warning("qq send returned falsy for scene=%s", self.scene)
+            log.warning("qq send returned falsy for scene=%s", self.scene)
         self.sent += 1
         self.first = False
         return True
@@ -197,10 +187,8 @@ class _BubbleStreamer:
         if self.dead:
             return
         self.buf += delta
-        # 开头可能是时间标记，先攒够字符再判断，别把半个括号发出去
         if self.sent == 0 and len(self.buf) < 8 and not _STREAM_END.search(self.buf):
             return
-        # 思考标签没闭合前不发
         if "<think" in self.buf and "</think>" not in self.buf:
             return
         if _is_upstream_safety_error(self.buf):
@@ -266,11 +254,11 @@ PRIVATE_PROMPT_INSTRUCTION = """【你是同一个人】
 你有 `web_search` 联网搜索工具。只要凌冥问起近况、最新新闻、实时事件或者任何你拿不准的事实，立刻调用 web_search 查证，不要硬猜。查到之后用人话把关键信息说出来，别只说"查到了"。
 他引用了一条旧消息跟你说话时，前面会出现「[引用的那条｜谁] 原文」，那是他指着那句话在问你，接着那句往下答，别装没看见。
 
-【图片：你自己看得见】
-他会直接把图发给你，图就附在那条消息里，你自己长眼睛看。
-- 不要问"发的是什么"，不要说自己看不到、接口不通、图没刷出来。
-- 图上有什么就说什么：他在买什么、多少钱、什么型号、截图里的字、他做的饭长什么样。
-- 历史里更早的图会变成「[图片]」占位，那是为了省地方；记不清就别硬编。
+【图片：看见了就说，没看见就别编】
+他发的图会以附件形式挂在他那条消息后面，你自己看。
+- 真看到了，就说图里的东西：他买了什么、多少钱、什么型号、截图上的字、日程表上的安排。
+- 如果那条消息只有「[图片·没取到]」或者底下没有图，就是这次真没拿到。直说一句"这回图没过来，你再发一次"，不许瞎描述、不许编内容、更不许说自己能看见。
+- 宁可说没收到，也绝对不能编一张不存在的图。这是最丢人的错。
 - 表情包看懂了也别表演，当标点用就行。
 
 【表情包"零预设"原则（最高优先级，比接话欲重要）】
@@ -284,20 +272,18 @@ PRIVATE_PROMPT_INSTRUCTION = """【你是同一个人】
 【时间标记是内部参考，不许说出来】
 历史消息前面的「（刚刚）」「（今天 09:15）」「（昨天 22:40）」只是给你判断时间用的标注，不是你该说的话。
 你的回复里绝对不能出现这类括号时间标记，一个字都不要抄，直接从正文开始说。
-参考时间是用来算间隔的，不是用来念的。
 
 【时间感铁律】
 每条历史消息前面括号里是它真实发生的时间。配合系统给你的当前时间算清楚间隔。
-别把几小时前、昨天、前好几天的事说成「刚才」「刚吃完」，也别把刚刚发生的事当成老早以前。
+别把几小时前、昨天、前好几天的事说成「刚才」「刚吃完」。
 超过一周的事只记得个大概就直说记不太清，别硬编细节。
 
 【标点与分气泡铁律（严格执行凌冥要求）】
-1. 【必须使用正常标点符号】：严禁用空格代替逗号或句号！句子该用逗号用逗号，该用问号用问号，语气词该加逗号加逗号。
-2. 【一句话一个气泡】：想发多句话，每句话必须独占一行（直接敲回车换行），不要把两句长话黏在同一个气泡里！
+1. 【必须使用正常标点符号】：严禁用空格代替逗号或句号！
+2. 【一句话一个气泡】：想发多句话，每句话必须独占一行（直接敲回车换行）。
 示例：
 想吃就买点呗，大冷天的吃点热乎的暖胃。
 不过别加辣汤，挑点清淡的萝卜豆腐垫垫肚。
-
 3. 语气随性自然、接地气，符合三十岁疲惫社友的真实聊天状态，每次回复 1 到 2 句话，分 1 到 2 个气泡发送。"""
 
 
@@ -308,7 +294,6 @@ def _looks_like_model_query(t: str) -> bool:
 
 
 async def _maybe_command(text: str) -> bool:
-    """私聊里的本地指令，不经过模型，省时间也不会被大模型改味。"""
     raw = (text or "").strip()
     if not raw:
         return False
@@ -316,7 +301,6 @@ async def _maybe_command(text: str) -> bool:
     async def reply(s: str):
         await send_qq_msg("private", int(OWNER_ID or 0), s)
 
-    # 自然问法："现在什么模型""哥现在用什么模型"
     if _looks_like_model_query(raw):
         try:
             cfg = get_config("qq")
@@ -376,8 +360,7 @@ async def _maybe_command(text: str) -> bool:
             await reply("模型 —— 看现在用哪个\n模型 xxx —— 直接换\n记忆 —— 看候选\n记忆确认 编号\n记忆作废 编号")
             return True
     except Exception:
-        import logging
-        logging.getLogger(__name__).exception("command failed")
+        log.exception("command failed")
         await reply("这条指令卡住了。")
         return True
     return False
@@ -397,10 +380,25 @@ def _model_line() -> str:
         return ""
 
 
+def _take_images(last_msg_id):
+    """先按消息 id 取；取不到就看最近半分钟有没有刚发来的图。"""
+    imgs=None
+    if last_msg_id:
+        imgs=_CURRENT_IMAGES.pop(str(last_msg_id),None)
+    if imgs:
+        return imgs
+    now=time.time()
+    if _RECENT_IMAGES["items"] and now-_RECENT_IMAGES["at"]<IMAGE_HOLD_SECONDS:
+        imgs=_RECENT_IMAGES["items"]
+        _RECENT_IMAGES["items"]=[]
+        _RECENT_IMAGES["at"]=0.0
+        return imgs
+    return None
+
+
 async def _private_reply(last_msg_id=None):
     global _private_pending
     try:
-        # 等他打完。这几秒里只要又来新消息，这个任务会被取消，重新计时
         await asyncio.sleep(QQ_DEBOUNCE + random.uniform(0, 0.6))
         from qq_bot import send_qq_msg
         hist=recent_timed("message",HISTORY_LIMIT)
@@ -409,11 +407,12 @@ async def _private_reply(last_msg_id=None):
         sys_prompt = _cached_context() + "\n\n" + PRIVATE_PROMPT_INSTRUCTION + _model_line()
         messages=[{"role":"system","content":sys_prompt}]+hist
 
-        # 把这条消息带的真图挂上去，主模型自己看
-        imgs=_CURRENT_IMAGES.pop(str(last_msg_id),None) if last_msg_id else None
+        imgs=_take_images(last_msg_id)
+        log.info("qq reply imgs=%d last=%s", len(imgs or []), last_msg_id)
         if imgs and messages and messages[-1].get("role")=="user":
             txt=str(messages[-1].get("content") or "")
-            parts=[{"type":"text","text":txt or "（看图）"}]
+            txt=re.sub(r'\[图片·没取到\]','',txt).strip()
+            parts=[{"type":"text","text":txt or "（他发了图）"}]
             for uri in imgs:
                 parts.append({"type":"image_url","image_url":{"url":uri}})
             messages[-1]={**messages[-1],"content":parts}
@@ -425,28 +424,21 @@ async def _private_reply(last_msg_id=None):
                 break
         streamer=_BubbleStreamer(send_qq_msg,"message","private",int(OWNER_ID or 0),max_b=4)
         try:
-            reply=(await _tool_chat(messages,
-                                    on_delta=streamer.feed,
-                                    use_tools=_needs_tools(last_user))).strip()
+            reply=(await _tool_chat(messages,on_delta=streamer.feed,use_tools=_needs_tools(last_user))).strip()
         except Exception:
-            import logging
-            logging.getLogger(__name__).exception("tool chat failed, retry plain")
+            log.exception("tool chat failed, retry plain")
             reply=""
 
-        # 工具轮把额度吃空了，上游会吐空字符串；这时退回一次不带工具的纯对话
         if not reply and streamer.sent == 0:
             try:
-                reply=(await call_llm(messages,
-                                      max_tokens=400,channel="qq",on_delta=streamer.feed)).strip()
+                reply=(await call_llm(messages,max_tokens=400,channel="qq",on_delta=streamer.feed)).strip()
             except Exception:
                 reply=""
 
         if not reply and streamer.sent == 0:
-            # 再不说话就成哑巴了，至少给一句，别让他对着空白干等
             await streamer.flush("……刚卡了一下，你再说一遍")
             return
         if reply and streamer.sent==0:
-            # 首气泡带引用回复
             first=_REPLY_RE.search(reply)
             if first and last_msg_id and not first.group(1):
                 reply=_REPLY_RE.sub(f"[REPLY:{last_msg_id}]",reply,count=1)
@@ -504,7 +496,6 @@ async def _group_reply(gid, last_msg_id=None):
         if _group_pending.get(gid) is task:_group_pending.pop(gid,None)
 
 def _is_sticker(d) -> bool:
-    """QQ 图片段里 sub_type=1 或 summary 带"表情"的，就是表情包。"""
     d = d or {}
     if str(d.get("sub_type") or "") in ("1", "sticker"):
         return True
@@ -512,10 +503,9 @@ def _is_sticker(d) -> bool:
     return any(k in summary for k in ("表情", "动画", "mface"))
 
 def _collect_images(data):
-    """收集图片地址，标出哪张是表情包。"""
     raw = data.get("raw_message", "") or ""
     message = data.get("message")
-    found = []  # [(url_or_file, is_sticker)]
+    found = []
     if isinstance(message, list):
         for seg in message:
             if isinstance(seg, dict) and seg.get("type") == "image":
@@ -529,7 +519,7 @@ def _collect_images(data):
     return found
 
 async def _prepare_incoming(data):
-    """把一条 QQ 消息拆成「文字 + 图」。图压好直接交出去，不再翻译成文字。"""
+    """拆成「文字 + 图」。图压好直接交出去，不再翻译成文字。"""
     clean_text = _clean_cq(data.get("raw_message", "") or "")
     found = _collect_images(data)
     if not found:
@@ -547,13 +537,14 @@ async def _prepare_incoming(data):
                     urls.append(info["url"])
             except Exception:
                 continue
+    log.info("qq image urls=%d", len(urls))
     if not urls:
-        return clean_text, []
+        return (f"{clean_text}\n[图片·没取到]" if clean_text else "[图片·没取到]"), []
 
     try:
         from media_utils import fetch_image_data_uri
     except Exception:
-        return clean_text, []
+        return (f"{clean_text}\n[图片·没取到]" if clean_text else "[图片·没取到]"), []
 
     uris = []
     for url in urls[:2]:
@@ -563,6 +554,7 @@ async def _prepare_incoming(data):
             uri = ""
         if uri:
             uris.append(uri)
+    log.info("qq image data_uris=%d bytes=%s", len(uris), [len(x) for x in uris])
     if not uris:
         return (f"{clean_text}\n[图片·没取到]" if clean_text else "[图片·没取到]"), []
     return clean_text, uris
@@ -591,11 +583,13 @@ async def handle_event(data):
             text = f"{quoted}\n{text}".strip() if text else quoted
         if images:
             _CURRENT_IMAGES[str(mid)] = images
-            while len(_CURRENT_IMAGES) > _CURRENT_IMAGES_MAX:
+            while len(_CURRENT_IMAGES) > _IMAGES_MAX:
                 _CURRENT_IMAGES.pop(next(iter(_CURRENT_IMAGES)))
+            # 留个尾巴：他隔几秒再补一句话，图也不会丢
+            _RECENT_IMAGES["items"] = images
+            _RECENT_IMAGES["at"] = time.time()
             text = (f"{text}\n[图片]" if text else "[图片]")
 
-        # 只发了表情包、没打字：看一眼就收，不主动接梗
         if _has_image(data) and not _clean_cq(raw):
             save_message("user",f"[QQ] {text or '[表情包]'}",scene="message",source="qq",message_id=mid)
             try:
