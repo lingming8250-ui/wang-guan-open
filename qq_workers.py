@@ -275,6 +275,7 @@ PRIVATE_PROMPT_INSTRUCTION = """【你是同一个人】
 
 【图片与截图阅读说明】
 凌冥发来商品截图、网页截图、照片时，后台会自动解析出图片里的文字和商品信息（如 [附图内容: ...]），你必须仔细阅读这些信息并自然回应他，绝对严禁回答「我看不到图片」「接口看不到你甩过来的图片」「图没刷出来」！
+如果只有「[图片·没认出来]」，说明那次识图没成。你可以提一句没看清，也可以让他说「补认」，但不要装没这回事。
 
 【时间标记是内部参考，不许说出来】
 历史消息前面的「（刚刚）」「（今天 09:15）」「（昨天 22:40）」只是给你判断时间用的标注，不是你该说的话。
@@ -319,6 +320,25 @@ async def _maybe_command(text: str) -> bool:
             await reply(f"现在挂 {cfg.get('model')}{tag}")
         except Exception:
             await reply("查配置的时候出错了。")
+        return True
+
+    # 补认：把刚才没认出来的那张图再看一遍
+    if raw in ("补认", "补图", "重看", "再看一眼"):
+        try:
+            from media_utils import recognize_image_url, pop_image_ref
+            ref = pop_image_ref()
+            if not ref:
+                await reply("没有待补的图。")
+                return True
+            desc = await recognize_image_url(ref.get("url", ""), sticker=ref.get("sticker", False))
+            if not desc:
+                await reply("还是没认出来，这回先记下了。")
+                return True
+            save_message("user", f"[补认的图片内容] {desc}", scene="message", source="qq")
+            ctx_cache_reset()
+            await reply(f"补上了：{desc}")
+        except Exception:
+            await reply("补认的时候出错了。")
         return True
 
     if raw[0] in ("/", "／", "!", "！"):
@@ -368,7 +388,7 @@ async def _maybe_command(text: str) -> bool:
             await reply(f"删了 {n} 条。" if n else "没给编号。")
             return True
         if body in ("帮助", "菜单"):
-            await reply("模型 —— 看现在用哪个\n模型 xxx —— 直接换\n记忆 —— 看候选\n记忆确认 编号\n记忆作废 编号")
+            await reply("模型 —— 看现在用哪个\n模型 xxx —— 直接换\n补认 —— 把没认出来的图再看一遍\n记忆 —— 看候选\n记忆确认 编号\n记忆作废 编号")
             return True
     except Exception:
         import logging
@@ -508,14 +528,14 @@ def _collect_images(data):
         return found
     for m in re.finditer(r'\[CQ:image,[^\]]*?(?:url=([^,\]]+)|file=([^,\]]+))[^\]]*?\]', raw, re.I):
         whole = m.group(0)
-        sticker = "sub_type=1" in whole or "动画表情" in whole or "表情" in whole
+        sticker = "sub_type=1" in whole or "动画表情" in whole
         found.append((m.group(1) or m.group(2), sticker))
     return found
 
 async def _parse_images_and_text(data):
-    """图片解析：表情包走轻量识图（一句话），正常截图/照片走完整识图。"""
+    """图片解析：表情包走一句话，正常图走完整描述；认不出来的留个底，之后可以补认。"""
     found = _collect_images(data)
-    clean_text = _clean_cq(raw_text := (data.get("raw_message", "") or ""))
+    clean_text = _clean_cq(data.get("raw_message", "") or "")
 
     if not found:
         return clean_text
@@ -542,18 +562,29 @@ async def _parse_images_and_text(data):
 
     desc = ""
     try:
-        from media_utils import recognize_image_url
+        from media_utils import recognize_image_url, save_image_ref
+    except Exception:
+        return clean_text
+
+    try:
         desc = await recognize_image_url(url, caption=clean_text, sticker=sticker)
     except Exception as exc:
         import logging
         logging.getLogger(__name__).warning("recognize_image_url failed: %s", exc)
         desc = ""
 
-    if desc and clean_text:
+    if not desc:
+        # 认不出来就留个地址，别让这条消息变成空白
+        try:
+            save_image_ref(data.get("message_id"), url, sticker)
+        except Exception:
+            pass
+        tag = "[表情包·没认出来]" if sticker else "[图片·没认出来]"
+        return f"{clean_text}\n{tag}" if clean_text else tag
+
+    if clean_text:
         return f"{clean_text}\n[{'表情包' if sticker else '附图'}内容: {desc}]"
-    elif desc:
-        return f"[发来的{'表情包' if sticker else '附图/商品截图'}内容: {desc}]"
-    return clean_text
+    return f"[发来的{'表情包' if sticker else '附图/商品截图'}内容: {desc}]"
 
 
 def _has_image(data) -> bool:
