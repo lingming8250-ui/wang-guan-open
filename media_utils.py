@@ -1,112 +1,17 @@
 """Generic media helpers for vision, STT and TTS.
 
-识图这条路的三条硬规矩：
-1. 先压再送。原图几十兆直接塞过去，慢和超时都是这么来的。
-2. 掐时间。超过 VISION_TIMEOUT 就当没看见，绝不能把整条回复拖死。
-3. 认过的图记住。同一张表情包只花一次钱。
-
-另外，没认出来的图要留一份底：存个地址，事后还能说"补认"再看一遍。
+图不再先翻译成文字：压一把，直接给主模型看。
+这里只负责三件事：下载、压、转 data URI。
 """
 from __future__ import annotations
-import os,io,json,base64,tempfile,hashlib,threading,requests,asyncio,re
-from llm_channels import get_config,record_result
+import os,io,base64,tempfile,requests,asyncio,re
 
-VISION_MAX_TOKENS=int(os.getenv("VISION_MAX_TOKENS","900"))
-STICKER_MAX_TOKENS=int(os.getenv("STICKER_MAX_TOKENS","90"))
-VISION_TIMEOUT=float(os.getenv("VISION_TIMEOUT","30"))
 VISION_MAX_EDGE=int(os.getenv("VISION_MAX_EDGE","1024"))
 VISION_JPEG_QUALITY=int(os.getenv("VISION_JPEG_QUALITY","85"))
-VISION_CACHE_PATH=os.getenv("VISION_CACHE_PATH","/app/data/vision_cache.json")
-VISION_CACHE_MAX=int(os.getenv("VISION_CACHE_MAX","800"))
-IMAGE_REF_PATH=os.getenv("IMAGE_REF_PATH","/app/data/image_refs.json")
-IMAGE_REF_MAX=int(os.getenv("IMAGE_REF_MAX","200"))
+IMAGE_FETCH_TIMEOUT=float(os.getenv("IMAGE_FETCH_TIMEOUT","20"))
 
-_cache_lock=threading.Lock()
-_cache_loaded=False
-_cache={}
-
-_ref_lock=threading.Lock()
-_refs=[]
-
-def _load_cache():
-    global _cache,_cache_loaded
-    if _cache_loaded:
-        return
-    _cache_loaded=True
-    try:
-        with open(VISION_CACHE_PATH,"r",encoding="utf-8") as f:
-            data=json.load(f)
-        if isinstance(data,dict):
-            _cache=data
-    except Exception:
-        _cache={}
-
-def _save_cache():
-    try:
-        os.makedirs(os.path.dirname(VISION_CACHE_PATH) or ".",exist_ok=True)
-        while len(_cache)>VISION_CACHE_MAX:
-            _cache.pop(next(iter(_cache)))
-        tmp=VISION_CACHE_PATH+".tmp"
-        with open(tmp,"w",encoding="utf-8") as f:
-            json.dump(_cache,f,ensure_ascii=False)
-        os.replace(tmp,VISION_CACHE_PATH)
-    except Exception:
-        pass
-
-def _cache_get(key):
-    with _cache_lock:
-        _load_cache()
-        return _cache.get(key)
-
-def _cache_put(key,value):
-    with _cache_lock:
-        _load_cache()
-        _cache[key]=value
-        _save_cache()
-
-def _load_refs():
-    global _refs
-    if _refs:
-        return
-    try:
-        with open(IMAGE_REF_PATH,"r",encoding="utf-8") as f:
-            data=json.load(f)
-        if isinstance(data,list):
-            _refs=data
-    except Exception:
-        _refs=[]
-
-def _save_refs():
-    try:
-        os.makedirs(os.path.dirname(IMAGE_REF_PATH) or ".",exist_ok=True)
-        tmp=IMAGE_REF_PATH+".tmp"
-        with open(tmp,"w",encoding="utf-8") as f:
-            json.dump(_refs[-IMAGE_REF_MAX:],f,ensure_ascii=False)
-        os.replace(tmp,IMAGE_REF_PATH)
-    except Exception:
-        pass
-
-def save_image_ref(msg_id,url,sticker=False):
-    """没认出来的图留个地址，回头能补。"""
-    if not url:
-        return
-    with _ref_lock:
-        _load_refs()
-        _refs.append({"msg_id":str(msg_id or ""),"url":url,"sticker":bool(sticker)})
-        del _refs[:-IMAGE_REF_MAX]
-        _save_refs()
-
-def last_image_ref():
-    with _ref_lock:
-        _load_refs()
-        return _refs[-1] if _refs else None
-
-def pop_image_ref():
-    with _ref_lock:
-        _load_refs()
-        item=_refs.pop() if _refs else None
-        _save_refs()
-        return item
+def _download(url,headers=None,timeout=20):
+    r=requests.get(url,headers=headers or {},timeout=timeout);r.raise_for_status();return r.content
 
 def _shrink(data: bytes) -> bytes:
     """长边缩到 VISION_MAX_EDGE，转 JPEG。没有 Pillow 就原样返回。"""
@@ -126,65 +31,25 @@ def _shrink(data: bytes) -> bytes:
         buf=io.BytesIO()
         im.save(buf,format="JPEG",quality=VISION_JPEG_QUALITY,optimize=True)
         out=buf.getvalue()
-        return out if out else data
+        return out or data
     except Exception:
         return data
 
-async def _vision(payload,label="vision",max_tokens=None):
-    import httpx
-    payload={**payload,"max_tokens":max_tokens or VISION_MAX_TOKENS}
-    cfg=await asyncio.to_thread(get_config,"vision")
-    extra={str(k):str(v) for k,v in (cfg.get("extra_headers") or {}).items() if str(k).lower() not in {"authorization","content-type"}}
-    headers={**extra,"Authorization":f"Bearer {cfg['api_key']}","Content-Type":"application/json"}
-    payload={**payload,"model":cfg["model"]}
-    async with httpx.AsyncClient(timeout=VISION_TIMEOUT,http2=False) as c:
-        r=await c.post(cfg["base_url"]+"/chat/completions",headers=headers,json=payload)
-    if r.status_code>=400:
-        record_result(cfg.get("config_id"),False,"vision");raise RuntimeError(f"vision HTTP {r.status_code}: {r.text[:300]}")
-    record_result(cfg.get("config_id"),True,"vision")
-    return r.json()["choices"][0]["message"]["content"].strip()
-
-def _download(url,headers=None):
-    r=requests.get(url,headers=headers or {},timeout=20);r.raise_for_status();return r.content
-
-STICKER_PROMPT=("这是一张表情包/贴图。一句话说清它表达什么情绪或什么意思，别超过二十五字。"
-                "不用描述画面细节，不用分点，不用客套。")
-
-IMAGE_PROMPT=("把这张图说清楚，给聊天用。按看到的东西写：画面主体、场景、氛围，"
-              "图上的文字原样抄出来，价格、型号、数字、人名地名一个都别漏，表格和列表也照实说。"
-              "如果是网页或商品截图，把标题、价格、关键参数说全。"
-              "不要客套，不要分点编号，不要脑补没看见的东西。")
-
-async def recognize_image_url(url,caption="",sticker=False):
+async def fetch_image_data_uri(url) -> str:
+    """下回来、压小、转成 data:image/jpeg;base64,... 直接塞进对话用。"""
+    if not url or not str(url).startswith("http"):
+        return ""
     try:
-        data=await asyncio.wait_for(asyncio.to_thread(_download,url,{"User-Agent":"wang-guan-open/1.0"}),timeout=VISION_TIMEOUT)
+        data=await asyncio.wait_for(
+            asyncio.to_thread(_download,url,{"User-Agent":"wang-guan-open/1.0"},IMAGE_FETCH_TIMEOUT),
+            timeout=IMAGE_FETCH_TIMEOUT,
+        )
     except Exception:
         return ""
     if not data:
         return ""
-
-    key=hashlib.sha1(data).hexdigest()+("|s" if sticker else "|i")
-    hit=_cache_get(key)
-    if hit:
-        return hit
-
     small=await asyncio.to_thread(_shrink,data)
-    b64="data:image/jpeg;base64,"+base64.b64encode(small).decode()
-
-    try:
-        if sticker:
-            text=await _vision({"messages":[{"role":"user","content":[{"type":"text","text":STICKER_PROMPT},{"type":"image_url","image_url":{"url":b64}}]}]},max_tokens=STICKER_MAX_TOKENS)
-        else:
-            prompt=IMAGE_PROMPT
-            if caption:prompt+=f"\n发图的人同时说了：{caption[:200]!s}（只当语境，别复述）"
-            text=await _vision({"messages":[{"role":"user","content":[{"type":"text","text":prompt},{"type":"image_url","image_url":{"url":b64}}]}]})
-    except Exception:
-        return ""
-
-    text=(text or "").strip()
-    if text:
-        _cache_put(key,text)
-    return text
+    return "data:image/jpeg;base64,"+base64.b64encode(small).decode()
 
 async def recognize_telegram_image(file_id,caption=""):
     token=os.getenv("TG_BOT_TOKEN","")
@@ -192,7 +57,7 @@ async def recognize_telegram_image(file_id,caption=""):
     info=await asyncio.to_thread(lambda:requests.get(f"https://api.telegram.org/bot{token}/getFile",params={"file_id":file_id},timeout=10).json())
     path=(info.get("result") or {}).get("file_path","")
     if not path:return ""
-    return await recognize_image_url(f"https://api.telegram.org/file/bot{token}/{path}",caption)
+    return await fetch_image_data_uri(f"https://api.telegram.org/file/bot{token}/{path}")
 
 async def transcribe_url(url,filename="audio.ogg"):
     key=os.getenv("STT_API_KEY",os.getenv("OPENAI_API_KEY","")).strip()
