@@ -4,15 +4,19 @@
 1. 先压再送。原图几十兆直接塞过去，慢和超时都是这么来的。
 2. 掐时间。超过 VISION_TIMEOUT 就当没看见，绝不能把整条回复拖死。
 3. 认过的图记住。同一张表情包只花一次钱。
+
+起点是「不限字数、不限时间」：描述很细，但它能卡一分半。
+压图之后速度快了，字数可以还回去，别为了快把眼睛也省了。
 """
 from __future__ import annotations
 import os,io,json,base64,tempfile,hashlib,threading,requests,asyncio,re
 from llm_channels import get_config,record_result
 
-VISION_MAX_TOKENS=int(os.getenv("VISION_MAX_TOKENS","350"))
-STICKER_MAX_TOKENS=int(os.getenv("STICKER_MAX_TOKENS","70"))
-# 识图只是配菜，绝不能把整条回复拖死：掐在 20 秒内，超了就当没看见
-VISION_TIMEOUT=float(os.getenv("VISION_TIMEOUT","20"))
+# 压图之后 900 字也够快，别再砍到三百五那种敷衍样
+VISION_MAX_TOKENS=int(os.getenv("VISION_MAX_TOKENS","900"))
+STICKER_MAX_TOKENS=int(os.getenv("STICKER_MAX_TOKENS","90"))
+# 掐时间，但给足：压缩过的图正常几秒就回，30 秒是兜底
+VISION_TIMEOUT=float(os.getenv("VISION_TIMEOUT","30"))
 # 压缩：长边超过这个就缩，质量按下面给
 VISION_MAX_EDGE=int(os.getenv("VISION_MAX_EDGE","1024"))
 VISION_JPEG_QUALITY=int(os.getenv("VISION_JPEG_QUALITY","85"))
@@ -96,10 +100,15 @@ async def _vision(payload,label="vision",max_tokens=None):
     return r.json()["choices"][0]["message"]["content"].strip()
 
 def _download(url,headers=None):
-    r=requests.get(url,headers=headers or {},timeout=15);r.raise_for_status();return r.content
+    r=requests.get(url,headers=headers or {},timeout=20);r.raise_for_status();return r.content
 
-STICKER_PROMPT=("这是一张表情包/贴图。只回一句：它表达什么情绪或什么意思，二十字以内。"
-                "不要描述画面细节，不要分点，不要客套。")
+STICKER_PROMPT=("这是一张表情包/贴图。一句话说清它表达什么情绪或什么意思，别超过二十五字。"
+                "不用描述画面细节，不用分点，不用客套。")
+
+IMAGE_PROMPT=("把这张图说清楚，给聊天用。按看到的东西写：画面主体、场景、氛围，"
+              "图上的文字原样抄出来，价格、型号、数字、人名地名一个都别漏，表格和列表也照实说。"
+              "如果是网页或商品截图，把标题、价格、关键参数说全。"
+              "不要客套，不要分点编号，不要脑补没看见的东西。")
 
 async def recognize_image_url(url,caption="",sticker=False):
     try:
@@ -121,10 +130,8 @@ async def recognize_image_url(url,caption="",sticker=False):
         if sticker:
             text=await _vision({"messages":[{"role":"user","content":[{"type":"text","text":STICKER_PROMPT},{"type":"image_url","image_url":{"url":b64}}]}]},max_tokens=STICKER_MAX_TOKENS)
         else:
-            # 只要它把关键信息说清楚，不用写长文，越长越慢
-            prompt=("看图，用中文两三句话说明关键信息：是什么东西/什么场景，有文字就原样抄出来，"
-                    "有价格、型号、数字、人名地名都别漏。不要客套，不要分点，不要脑补没看见的东西。")
-            if caption:prompt+=f"\n发图的人同时说了：{caption[:120]!s}"
+            prompt=IMAGE_PROMPT
+            if caption:prompt+=f"\n发图的人同时说了：{caption[:200]!s}（只当语境，别复述）"
             text=await _vision({"messages":[{"role":"user","content":[{"type":"text","text":prompt},{"type":"image_url","image_url":{"url":b64}}]}]})
     except Exception:
         return ""
