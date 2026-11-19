@@ -30,6 +30,9 @@ CONTEXT_TTL = float(os.getenv("QQ_CONTEXT_TTL", "45"))
 QQ_DEBOUNCE = float(os.getenv("QQ_REPLY_DEBOUNCE", "4.0"))
 # 纯表情包在这么久之内的对话里保持沉默
 STICKER_SILENCE = float(os.getenv("QQ_STICKER_SILENCE", "600"))
+# 当前这条消息带的真图（内存里放一会儿，回完就丢）
+_CURRENT_IMAGES={}
+_CURRENT_IMAGES_MAX=8
 
 # 触发挂载工具列表的关键词（含联网搜、天气、提醒等）
 _TOOL_HINTS = (
@@ -263,19 +266,20 @@ PRIVATE_PROMPT_INSTRUCTION = """【你是同一个人】
 你有 `web_search` 联网搜索工具。只要凌冥问起近况、最新新闻、实时事件或者任何你拿不准的事实，立刻调用 web_search 查证，不要硬猜。查到之后用人话把关键信息说出来，别只说"查到了"。
 他引用了一条旧消息跟你说话时，前面会出现「[引用的那条｜谁] 原文」，那是他指着那句话在问你，接着那句往下答，别装没看见。
 
+【图片：你自己看得见】
+他会直接把图发给你，图就附在那条消息里，你自己长眼睛看。
+- 不要问"发的是什么"，不要说自己看不到、接口不通、图没刷出来。
+- 图上有什么就说什么：他在买什么、多少钱、什么型号、截图里的字、他做的饭长什么样。
+- 历史里更早的图会变成「[图片]」占位，那是为了省地方；记不清就别硬编。
+- 表情包看懂了也别表演，当标点用就行。
+
 【表情包"零预设"原则（最高优先级，比接话欲重要）】
 表情包是情绪标点，不是对话邀请函。图像的表意权归发送者，不归图像本身。
-后台会给你一句它大概什么意思，你知道就行，别念出来。
 - 有文字+表情包：只回文字，表情包当没看见。
 - 只发表情包：接着聊原来的话题；如果话题本来就停了，一句"嗯？""咋了"轻轻带过，不展开。
 - 连续刷好几个：当他在打字前热身，别逐个接，别表演。
 禁止：把[刀][杀]当人身威胁；把[亲亲][抱抱]当关系飞跃；给表情包配旁白、做文学化演绎；每张都回。
-想成他随手扔过来一个毛绒玩具：你余光看见了，但眼睛还在他脸上，不用弯腰去捡。
 例外只有三种：他明着cue这张图（"这图好不好笑""像不像你"）、斗图成了主题、之前已经形成默契的固定梗。
-
-【图片与截图阅读说明】
-凌冥发来商品截图、网页截图、照片时，后台会自动解析出图片里的文字和商品信息（如 [附图内容: ...]），你必须仔细阅读这些信息并自然回应他，绝对严禁回答「我看不到图片」「接口看不到你甩过来的图片」「图没刷出来」！
-如果只有「[图片·没认出来]」，说明那次识图没成。你可以提一句没看清，也可以让他说「补认」，但不要装没这回事。
 
 【时间标记是内部参考，不许说出来】
 历史消息前面的「（刚刚）」「（今天 09:15）」「（昨天 22:40）」只是给你判断时间用的标注，不是你该说的话。
@@ -320,25 +324,6 @@ async def _maybe_command(text: str) -> bool:
             await reply(f"现在挂 {cfg.get('model')}{tag}")
         except Exception:
             await reply("查配置的时候出错了。")
-        return True
-
-    # 补认：把刚才没认出来的那张图再看一遍
-    if raw in ("补认", "补图", "重看", "再看一眼"):
-        try:
-            from media_utils import recognize_image_url, pop_image_ref
-            ref = pop_image_ref()
-            if not ref:
-                await reply("没有待补的图。")
-                return True
-            desc = await recognize_image_url(ref.get("url", ""), sticker=ref.get("sticker", False))
-            if not desc:
-                await reply("还是没认出来，这回先记下了。")
-                return True
-            save_message("user", f"[补认的图片内容] {desc}", scene="message", source="qq")
-            ctx_cache_reset()
-            await reply(f"补上了：{desc}")
-        except Exception:
-            await reply("补认的时候出错了。")
         return True
 
     if raw[0] in ("/", "／", "!", "！"):
@@ -388,7 +373,7 @@ async def _maybe_command(text: str) -> bool:
             await reply(f"删了 {n} 条。" if n else "没给编号。")
             return True
         if body in ("帮助", "菜单"):
-            await reply("模型 —— 看现在用哪个\n模型 xxx —— 直接换\n补认 —— 把没认出来的图再看一遍\n记忆 —— 看候选\n记忆确认 编号\n记忆作废 编号")
+            await reply("模型 —— 看现在用哪个\n模型 xxx —— 直接换\n记忆 —— 看候选\n记忆确认 编号\n记忆作废 编号")
             return True
     except Exception:
         import logging
@@ -422,6 +407,17 @@ async def _private_reply(last_msg_id=None):
         if not hist:
             hist=recent("message",HISTORY_LIMIT,with_ids=True)
         sys_prompt = _cached_context() + "\n\n" + PRIVATE_PROMPT_INSTRUCTION + _model_line()
+        messages=[{"role":"system","content":sys_prompt}]+hist
+
+        # 把这条消息带的真图挂上去，主模型自己看
+        imgs=_CURRENT_IMAGES.pop(str(last_msg_id),None) if last_msg_id else None
+        if imgs and messages and messages[-1].get("role")=="user":
+            txt=str(messages[-1].get("content") or "")
+            parts=[{"type":"text","text":txt or "（看图）"}]
+            for uri in imgs:
+                parts.append({"type":"image_url","image_url":{"url":uri}})
+            messages[-1]={**messages[-1],"content":parts}
+
         last_user = ""
         for row in reversed(hist or []):
             if row.get("role") == "user":
@@ -429,7 +425,7 @@ async def _private_reply(last_msg_id=None):
                 break
         streamer=_BubbleStreamer(send_qq_msg,"message","private",int(OWNER_ID or 0),max_b=4)
         try:
-            reply=(await _tool_chat([{"role":"system","content":sys_prompt}]+hist,
+            reply=(await _tool_chat(messages,
                                     on_delta=streamer.feed,
                                     use_tools=_needs_tools(last_user))).strip()
         except Exception:
@@ -440,7 +436,7 @@ async def _private_reply(last_msg_id=None):
         # 工具轮把额度吃空了，上游会吐空字符串；这时退回一次不带工具的纯对话
         if not reply and streamer.sent == 0:
             try:
-                reply=(await call_llm([{"role":"system","content":sys_prompt}]+hist,
+                reply=(await call_llm(messages,
                                       max_tokens=400,channel="qq",on_delta=streamer.feed)).strip()
             except Exception:
                 reply=""
@@ -532,59 +528,44 @@ def _collect_images(data):
         found.append((m.group(1) or m.group(2), sticker))
     return found
 
-async def _parse_images_and_text(data):
-    """图片解析：表情包走一句话，正常图走完整描述；认不出来的留个底，之后可以补认。"""
-    found = _collect_images(data)
+async def _prepare_incoming(data):
+    """把一条 QQ 消息拆成「文字 + 图」。图压好直接交出去，不再翻译成文字。"""
     clean_text = _clean_cq(data.get("raw_message", "") or "")
-
+    found = _collect_images(data)
     if not found:
-        return clean_text
+        return clean_text, []
 
-    url, sticker = None, False
+    urls = []
     for u, s in found:
         if u and str(u).startswith("http"):
-            url, sticker = str(u), s
-            break
-    if url is None:
-        for u, s in found:
-            if not u:
-                continue
+            urls.append(str(u))
+        elif u:
             try:
                 from qq_bot import get_image
                 info = await get_image(u)
                 if info and info.get("url"):
-                    url, sticker = info["url"], s
-                    break
+                    urls.append(info["url"])
             except Exception:
                 continue
-    if not url:
-        return clean_text
+    if not urls:
+        return clean_text, []
 
-    desc = ""
     try:
-        from media_utils import recognize_image_url, save_image_ref
+        from media_utils import fetch_image_data_uri
     except Exception:
-        return clean_text
+        return clean_text, []
 
-    try:
-        desc = await recognize_image_url(url, caption=clean_text, sticker=sticker)
-    except Exception as exc:
-        import logging
-        logging.getLogger(__name__).warning("recognize_image_url failed: %s", exc)
-        desc = ""
-
-    if not desc:
-        # 认不出来就留个地址，别让这条消息变成空白
+    uris = []
+    for url in urls[:2]:
         try:
-            save_image_ref(data.get("message_id"), url, sticker)
+            uri = await fetch_image_data_uri(url)
         except Exception:
-            pass
-        tag = "[表情包·没认出来]" if sticker else "[图片·没认出来]"
-        return f"{clean_text}\n{tag}" if clean_text else tag
-
-    if clean_text:
-        return f"{clean_text}\n[{'表情包' if sticker else '附图'}内容: {desc}]"
-    return f"[发来的{'表情包' if sticker else '附图/商品截图'}内容: {desc}]"
+            uri = ""
+        if uri:
+            uris.append(uri)
+    if not uris:
+        return (f"{clean_text}\n[图片·没取到]" if clean_text else "[图片·没取到]"), []
+    return clean_text, uris
 
 
 def _has_image(data) -> bool:
@@ -604,10 +585,15 @@ async def handle_event(data):
     if typ=="private":
         if not OWNER_ID or uid!=OWNER_ID:return
 
-        text = await _parse_images_and_text(data)
+        text, images = await _prepare_incoming(data)
         quoted = await _quoted_text(data)
         if quoted:
             text = f"{quoted}\n{text}".strip() if text else quoted
+        if images:
+            _CURRENT_IMAGES[str(mid)] = images
+            while len(_CURRENT_IMAGES) > _CURRENT_IMAGES_MAX:
+                _CURRENT_IMAGES.pop(next(iter(_CURRENT_IMAGES)))
+            text = (f"{text}\n[图片]" if text else "[图片]")
 
         # 只发了表情包、没打字：看一眼就收，不主动接梗
         if _has_image(data) and not _clean_cq(raw):
