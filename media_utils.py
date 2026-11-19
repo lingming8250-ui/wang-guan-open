@@ -5,27 +5,28 @@
 2. 掐时间。超过 VISION_TIMEOUT 就当没看见，绝不能把整条回复拖死。
 3. 认过的图记住。同一张表情包只花一次钱。
 
-起点是「不限字数、不限时间」：描述很细，但它能卡一分半。
-压图之后速度快了，字数可以还回去，别为了快把眼睛也省了。
+另外，没认出来的图要留一份底：存个地址，事后还能说"补认"再看一遍。
 """
 from __future__ import annotations
 import os,io,json,base64,tempfile,hashlib,threading,requests,asyncio,re
 from llm_channels import get_config,record_result
 
-# 压图之后 900 字也够快，别再砍到三百五那种敷衍样
 VISION_MAX_TOKENS=int(os.getenv("VISION_MAX_TOKENS","900"))
 STICKER_MAX_TOKENS=int(os.getenv("STICKER_MAX_TOKENS","90"))
-# 掐时间，但给足：压缩过的图正常几秒就回，30 秒是兜底
 VISION_TIMEOUT=float(os.getenv("VISION_TIMEOUT","30"))
-# 压缩：长边超过这个就缩，质量按下面给
 VISION_MAX_EDGE=int(os.getenv("VISION_MAX_EDGE","1024"))
 VISION_JPEG_QUALITY=int(os.getenv("VISION_JPEG_QUALITY","85"))
 VISION_CACHE_PATH=os.getenv("VISION_CACHE_PATH","/app/data/vision_cache.json")
 VISION_CACHE_MAX=int(os.getenv("VISION_CACHE_MAX","800"))
+IMAGE_REF_PATH=os.getenv("IMAGE_REF_PATH","/app/data/image_refs.json")
+IMAGE_REF_MAX=int(os.getenv("IMAGE_REF_MAX","200"))
 
 _cache_lock=threading.Lock()
 _cache_loaded=False
 _cache={}
+
+_ref_lock=threading.Lock()
+_refs=[]
 
 def _load_cache():
     global _cache,_cache_loaded
@@ -62,6 +63,50 @@ def _cache_put(key,value):
         _load_cache()
         _cache[key]=value
         _save_cache()
+
+def _load_refs():
+    global _refs
+    if _refs:
+        return
+    try:
+        with open(IMAGE_REF_PATH,"r",encoding="utf-8") as f:
+            data=json.load(f)
+        if isinstance(data,list):
+            _refs=data
+    except Exception:
+        _refs=[]
+
+def _save_refs():
+    try:
+        os.makedirs(os.path.dirname(IMAGE_REF_PATH) or ".",exist_ok=True)
+        tmp=IMAGE_REF_PATH+".tmp"
+        with open(tmp,"w",encoding="utf-8") as f:
+            json.dump(_refs[-IMAGE_REF_MAX:],f,ensure_ascii=False)
+        os.replace(tmp,IMAGE_REF_PATH)
+    except Exception:
+        pass
+
+def save_image_ref(msg_id,url,sticker=False):
+    """没认出来的图留个地址，回头能补。"""
+    if not url:
+        return
+    with _ref_lock:
+        _load_refs()
+        _refs.append({"msg_id":str(msg_id or ""),"url":url,"sticker":bool(sticker)})
+        del _refs[:-IMAGE_REF_MAX]
+        _save_refs()
+
+def last_image_ref():
+    with _ref_lock:
+        _load_refs()
+        return _refs[-1] if _refs else None
+
+def pop_image_ref():
+    with _ref_lock:
+        _load_refs()
+        item=_refs.pop() if _refs else None
+        _save_refs()
+        return item
 
 def _shrink(data: bytes) -> bytes:
     """长边缩到 VISION_MAX_EDGE，转 JPEG。没有 Pillow 就原样返回。"""
