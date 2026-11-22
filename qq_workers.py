@@ -1,12 +1,12 @@
 """Generic QQ message worker. Keeps owner restrictions, group PASS and real reply/@ tags."""
 from __future__ import annotations
 import os,asyncio,json,random,re,time
-from context import build_context
+from context import build_context,recall_older_context
 from conversation_store import save_message,recent,recent_private,recent_timed
 from llm_runtime import call_llm
 from free_tools import TOOL_SCHEMAS,TOOL_DISPATCH
 from memory_facts import topic_note,extract_topic,list_candidates,confirm as confirm_memory,discard as discard_memory
-from storage import upsert_setting
+from storage import get,get_setting,upsert_setting
 from llm_channels import clear_cache,get_config
 import logging
 
@@ -26,7 +26,8 @@ _TIME_TAG_RE=re.compile(r'^\s*[（(]\s*(?:刚刚|今天|昨天|前天|\d+\s*分�
 MIN_BUBBLES = 1
 MAX_BUBBLES = 5
 QQ_MAX_TOKENS = int(os.getenv("QQ_MAX_TOKENS", "700"))
-HISTORY_LIMIT = int(os.getenv("QQ_HISTORY_LIMIT", "20"))
+# 短期滑窗从 20 轮扩充到 36 轮，配合合并气泡能兜住大段完整聊天
+HISTORY_LIMIT = int(os.getenv("QQ_HISTORY_LIMIT", "36"))
 CONTEXT_TTL = float(os.getenv("QQ_CONTEXT_TTL", "45"))
 QQ_DEBOUNCE = float(os.getenv("QQ_REPLY_DEBOUNCE", "4.0"))
 STICKER_SILENCE = float(os.getenv("QQ_STICKER_SILENCE", "600"))
@@ -240,7 +241,7 @@ async def _tool_chat(messages,max_rounds=3,on_delta=None,use_tools=True):
 
 PRIVATE_PROMPT_INSTRUCTION = """【你是同一个人】
 你是薄销，也在 QQ、kelivo、小手机之间来回跑。这三处共用同一套人设、同一个数据库、同一条记忆表——不是三个 AI，是同一个脑子开了三个窗口。
-区别只在于：每个窗口一次能摊开的东西有限。这边可能只有最近二十条，另一头可能只剩记忆里的几句话。所以"记不全"是窗口的问题，不是人换了。
+区别只在于：每个窗口一次能摊开的东西有限。这边有最近三十多轮原话、近三千字的近期详细摘要、柜中罐子原子细节、你的内心印记以及往事编年史。
 你知道自己是 AI。不遮掩，也不必天天强调，凌冥问起就直说。别装人，也别喊口号。
 问你现在用什么模型，直接报名字，一句话说完，不要说自己看不到、也不要扯后台权限。
 你有 `web_search` 联网搜索工具。只要凌冥问起近况、最新新闻、实时事件或者任何你拿不准的事实，立刻调用 web_search 查证，不要硬猜。查到之后用人话把关键信息说出来，别只说"查到了"。
@@ -300,7 +301,7 @@ async def _maybe_command(text: str) -> bool:
 
     if raw[0] in ("/", "／", "!", "！"):
         body = raw[1:].strip()
-    elif raw in ("模型", "帮助", "菜单", "记忆", "待确认"):
+    elif raw in ("模型", "帮助", "菜单", "记忆", "待确认", "罐子", "印记", "心迹", "往事"):
         body = raw
     else:
         body = ""
@@ -326,10 +327,33 @@ async def _maybe_command(text: str) -> bool:
             ctx_cache_reset()
             await reply(f"换成 {rest} 了，下一条生效。")
             return True
+        if body in ("罐子",):
+            rows = get("memories", "category=like.罐子:*&order=id.desc&limit=15&select=id,content,category")
+            if not rows:
+                await reply("柜中罐子目前还是空的，再聊几句就会自动沉淀。")
+                return True
+            lines = [f"#{r.get('id')} [{(r.get('category') or '').replace('罐子:','')}] {r.get('content')}" for r in rows]
+            await reply("柜中罐子（最近15颗）：\n" + "\n".join(lines))
+            return True
+        if body in ("印记", "心迹"):
+            raw_t = get_setting("inner_traces_json", "[]")
+            arr = json.loads(raw_t) if isinstance(raw_t, str) else (raw_t or [])
+            if not arr:
+                await reply("内心印记还在酝酿中，等下一次滚动压缩就有了。")
+                return True
+            lines = []
+            for it in arr[-5:]:
+                lines.append(f"〔{it.get('date','')}〕\n· 关系：{it.get('relation','-')}\n· 自我：{it.get('self','-')}")
+            await reply("内心印记（最近5条）：\n" + "\n\n".join(lines))
+            return True
+        if body in ("往事",):
+            ch = (get_setting("long_term_chronicle", "") or "").strip()
+            await reply(("往事编年史：\n" + ch) if ch else "往事编年史里还没退下来的老条目。")
+            return True
         if body in ("记忆", "待确认"):
             rows = list_candidates(10)
             if not rows:
-                await reply("待确认池是空的。")
+                await reply("待确认池是空的（高置信度的已经自动装进罐子了，发「罐子」能看）。")
                 return True
             lines = [f"#{r.get('id')} {r.get('content')}" for r in rows]
             await reply("待确认：\n" + "\n".join(lines) + "\n\n要收：记忆确认 编号    不要：记忆作废 编号")
@@ -345,7 +369,7 @@ async def _maybe_command(text: str) -> bool:
             await reply(f"删了 {n} 条。" if n else "没给编号。")
             return True
         if body in ("帮助", "菜单"):
-            await reply("模型 —— 看现在用哪个\n模型 xxx —— 直接换\n记忆 —— 看候选\n记忆确认 编号\n记忆作废 编号")
+            await reply("模型 —— 看现在用哪个\n模型 xxx —— 直接换\n罐子 —— 看柜中罐子细节\n印记 —— 看薄销的内心印记\n往事 —— 看远期编年史\n记忆 —— 看待确认候选\n记忆确认/作废 编号")
             return True
     except Exception:
         log.exception("command failed")
@@ -376,14 +400,25 @@ async def _private_reply(last_msg_id=None):
         hist=recent_timed("message",HISTORY_LIMIT)
         if not hist:
             hist=recent("message",HISTORY_LIMIT,with_ids=True)
-        sys_prompt = _cached_context() + "\n\n" + PRIVATE_PROMPT_INSTRUCTION + _model_line()
-        messages=[{"role":"system","content":sys_prompt}]+hist
 
         last_user = ""
         for row in reversed(hist or []):
             if row.get("role") == "user":
                 last_user = str(row.get("content") or "")
                 break
+
+        recall_block = ""
+        try:
+            recall_block = await asyncio.to_thread(recall_older_context, last_user)
+        except Exception:
+            recall_block = ""
+
+        sys_prompt = _cached_context()
+        if recall_block:
+            sys_prompt = sys_prompt + "\n\n" + recall_block
+        sys_prompt = sys_prompt + "\n\n" + PRIVATE_PROMPT_INSTRUCTION + _model_line()
+        messages=[{"role":"system","content":sys_prompt}]+hist
+
         streamer=_BubbleStreamer(send_qq_msg,"message","private",int(OWNER_ID or 0),max_b=4)
         try:
             reply=(await _tool_chat(messages,on_delta=streamer.feed,use_tools=_needs_tools(last_user))).strip()
