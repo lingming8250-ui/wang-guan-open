@@ -1,32 +1,47 @@
 """Public context engine.
 
-The private deployment injects many personal providers. The public build keeps the same
-composition pattern but uses generic data sources: configurable persona, layered memories,
-rolling cross-platform summary, unresolved threads and time. Optional providers can be
-registered by extensions without editing this file.
+四层立体人类记忆架构：
+1. 【柜中罐子 · 永久与分层事实】（容量提档至 60 条，按罐子分门别类）
+2. 【内心印记 · 双轨成长心迹】（薄销对凌冥的心软偏袒轨迹 + 自身30岁社畜状态演进）
+3. 【往事编年史 · 更早之前的记忆】（承接从滚动摘要溢出的早期大事件与节点，永久不丢）
+4. 【近期详细记忆摘要】（扩充至 2800 字，保留最近几周的一切生活细节、数字、食物与情绪）
+5. 【跨期回想检索】（当凌冥提及“之前/上次/以前”或特定旧词时，自动去老聊天记录和记忆库捞出原话）
 """
 from __future__ import annotations
-import os, time
+import os, re, json, time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from zoneinfo import ZoneInfo
 from typing import Callable
 from app_config import DEFAULT_TIMEZONE, AI_NAME, USER_NAME
-from storage import get
+from storage import get, get_setting
 
-ContextProvider=Callable[[],str]
-_PROVIDERS:list[ContextProvider]=[]
+ContextProvider = Callable[[], str]
+_PROVIDERS: list[ContextProvider] = []
 
-# 上下文里除了时间以外的东西，一分钟内不用重查；每条消息都去 Supabase 跑五个请求太慢
-_CACHE_TTL=float(os.getenv("CONTEXT_CACHE_TTL","60"))
-_cache={"body":"","at":0.0}
+_CACHE_TTL = float(os.getenv("CONTEXT_CACHE_TTL", "60"))
+_MEMORY_LIMIT = int(os.getenv("CONTEXT_MEMORY_LIMIT", "60"))
+_cache = {"body": "", "at": 0.0}
+
+_RECALL_TRIGGERS = (
+    "还记得", "记得吗", "记不记得", "之前", "上次", "上回", "以前", "那次", "那天",
+    "多久", "什么时候", "几号", "哪天", "第一次", "最早", "当初", "那会儿"
+)
+_STOP_WORDS = {
+    "还记得", "记得吗", "记不记得", "之前", "上次", "上回", "以前", "那次", "那天",
+    "我们", "你们", "他们", "什么", "怎么", "为什么", "那个", "这个", "就是", "然后",
+    "感觉", "好像", "是不是", "能不能", "可以", "一下", "来着", "还是", "没有", "已经"
+}
 
 
-def register_context_provider(provider:ContextProvider):
-    if provider not in _PROVIDERS:_PROVIDERS.append(provider)
+def register_context_provider(provider: ContextProvider):
+    if provider not in _PROVIDERS:
+        _PROVIDERS.append(provider)
 
-def unregister_context_provider(provider:ContextProvider):
-    if provider in _PROVIDERS:_PROVIDERS.remove(provider)
+
+def unregister_context_provider(provider: ContextProvider):
+    if provider in _PROVIDERS:
+        _PROVIDERS.remove(provider)
 
 
 def _base_prompt():
@@ -44,23 +59,93 @@ def _base_prompt():
 
 
 def _persona():
-    rows=get("persona_profile","select=category,key,content&order=category.asc")
-    if not rows:return ""
-    groups={}
-    for r in rows:groups.setdefault(r.get("category","persona"),[]).append(f"[{r.get('key','item')}] {r.get('content','')}")
-    return "【Persona / configurable profile】\n"+"\n".join(f"[{k}]\n"+"\n".join(v) for k,v in groups.items())
+    rows = get("persona_profile", "select=category,key,content&order=category.asc")
+    if not rows:
+        return ""
+    groups = {}
+    for r in rows:
+        groups.setdefault(r.get("category", "persona"), []).append(f"[{r.get('key','item')}] {r.get('content','')}")
+    return "【Persona / configurable profile】\n" + "\n".join(f"[{k}]\n" + "\n".join(v) for k, v in groups.items())
 
 
 def _memories():
-    rows=get("memories","memory_layer=in.(core,current,long_term)&order=importance.desc&limit=32&select=content,memory_layer,importance,tags")
-    if not rows:return ""
-    return "【Layered memory】\n"+"\n".join(f"- [{r.get('memory_layer')}|{r.get('importance',3)}] {r.get('content','')}" for r in rows)
+    rows = get(
+        "memories",
+        f"memory_layer=in.(core,current,long_term)&order=importance.desc,id.desc&limit={_MEMORY_LIMIT}"
+        "&select=content,memory_layer,importance,category,tags",
+    )
+    if not rows:
+        return ""
+    jars: dict[str, list[str]] = {}
+    general: list[str] = []
+    for r in rows:
+        content = (r.get("content") or "").strip()
+        if not content:
+            continue
+        cat = (r.get("category") or "").strip()
+        layer = r.get("memory_layer", "long_term")
+        imp = r.get("importance", 3)
+        if cat.startswith("罐子:"):
+            jar_name = cat.split(":", 1)[1].strip() or "关于你"
+            jars.setdefault(jar_name, []).append(f"  · {content}")
+        else:
+            general.append(f"- [{layer}|{imp}] {content}")
+
+    out = []
+    if general:
+        out.append("【Layered memory · 核心与长期记忆（共 " + str(len(general)) + " 条）】\n" + "\n".join(general))
+    if jars:
+        jar_blocks = []
+        for jname in ("关于你", "我们之间", "身边的人", "TA自己", "往事"):
+            if jname in jars:
+                jar_blocks.append(f"▸ [{jname}]\n" + "\n".join(jars.pop(jname)))
+        for jname, items in jars.items():
+            jar_blocks.append(f"▸ [{jname}]\n" + "\n".join(items))
+        out.append("【柜中罐子 · 收藏的原子事实细节】\n" + "\n".join(jar_blocks))
+    return "\n\n".join(out)
+
+
+def _inner_traces():
+    raw = get_setting("inner_traces_json", "")
+    if not raw:
+        return ""
+    try:
+        arr = json.loads(raw) if isinstance(raw, str) else raw
+    except Exception:
+        return ""
+    if not isinstance(arr, list) or not arr:
+        return ""
+    lines = []
+    for item in arr[-6:]:
+        if not isinstance(item, dict):
+            continue
+        dt = item.get("date", "")
+        rel = (item.get("relation") or "").strip()
+        slf = (item.get("self") or "").strip()
+        parts = []
+        if rel:
+            parts.append(f"对凌冥：{rel}")
+        if slf:
+            parts.append(f"自身状态：{slf}")
+        if parts:
+            lines.append(f"- 〔{dt}〕" + " ｜ ".join(parts))
+    if not lines:
+        return ""
+    return "【内心印记 · 薄销的双轨心迹演进（你的态度与情绪底色）】\n" + "\n".join(lines)
+
+
+def _chronicle():
+    text = (get_setting("long_term_chronicle", "") or "").strip()
+    if not text:
+        return ""
+    return "【往事编年史 · 更早之前的重要经历与约定（永久归档）】\n" + text
 
 
 def _threads():
-    rows=get("threads","status=in.(ACTIVE,DORMANT)&order=created_at.asc&limit=6&select=title,synthetic_guess,status,evidence")
-    if not rows:return ""
-    return "【Open threads】\n"+"\n".join(f"- [{r.get('status')}] {r.get('title','')}: {r.get('synthetic_guess','')}" for r in rows)
+    rows = get("threads", "status=in.(ACTIVE,DORMANT)&order=created_at.asc&limit=6&select=title,synthetic_guess,status,evidence")
+    if not rows:
+        return ""
+    return "【Open threads】\n" + "\n".join(f"- [{r.get('status')}] {r.get('title','')}: {r.get('synthetic_guess','')}" for r in rows)
 
 
 def _short_date(ts) -> str:
@@ -88,30 +173,72 @@ def _short_date(ts) -> str:
 
 
 def _rolling():
-    rows=get("platform_rolling_summary","order=id.desc&limit=1&select=content,period_start,period_end")
-    if not rows:return ""
-    content=(rows[0].get("content") or "").strip()
-    if not content:return ""
-    upto=_short_date(rows[0].get("period_end"))
-    head="【最近这段对话的记忆摘要（出了滑窗的老内容都在这里）"
+    rows = get("platform_rolling_summary", "order=id.desc&limit=1&select=content,period_start,period_end")
+    if not rows:
+        return ""
+    content = (rows[0].get("content") or "").strip()
+    if not content:
+        return ""
+    upto = _short_date(rows[0].get("period_end"))
+    head = "【最近这段对话的详细记忆摘要（出了滑窗的近期内容都在这里）"
     head += f"，更新至 {upto}】" if upto else "】"
-    return head+"\n"+content
+    return head + "\n" + content
 
 
 def _recent_groups():
     try:
         from conversation_store import recent_groups
         rows = recent_groups(limit=10)
-        if not rows: return ""
-        lines = [f"{r.get('content','')}" for r in rows if r.get('content')]
-        if not lines: return ""
+        if not rows:
+            return ""
+        lines = [f"{r.get('content','')}" for r in rows if r.get("content")]
+        if not lines:
+            return ""
         return "【群聊实时动态追踪（你在私聊与当前对话中知晓这些群聊前情）】\n" + "\n".join(lines)
     except Exception:
         return ""
 
 
+def recall_older_context(user_text: str) -> str:
+    """当凌冥提到'之前/上次/还记得吗'时，自动从更早的聊天记录和全量记忆库里检索原话片段。"""
+    t = (user_text or "").strip()
+    if len(t) < 2:
+        return ""
+    if not any(k in t for k in _RECALL_TRIGGERS):
+        return ""
+    words = [w for w in re.findall(r"[\u4e00-\u9fa5A-Za-z0-9]{2,8}", t) if w not in _STOP_WORDS]
+    if not words:
+        return ""
+    kw = max(words, key=len)
+    safe = "".join(c for c in kw if c not in "&=?(),*%")
+    if len(safe) < 2:
+        return ""
+    hits = []
+    try:
+        mem_rows = get("memories", f"content=ilike.*{safe}*&order=importance.desc&limit=6&select=content,category")
+        for r in mem_rows:
+            c = (r.get("content") or "").strip()
+            if c:
+                hits.append(f"- [记忆库] {c}")
+    except Exception:
+        pass
+    try:
+        chat_rows = get("chat_context", f"content=ilike.*{safe}*&order=seq.desc&limit=8&select=role,content,created_at")
+        for r in chat_rows[2:]:
+            c = (r.get("content") or "").strip()
+            dt = _short_date(r.get("created_at"))
+            who = "凌冥" if r.get("role") == "user" else "薄销"
+            if c:
+                hits.append(f"- [{dt} 原话] {who}: {c[:160]}")
+    except Exception:
+        pass
+    if not hits:
+        return ""
+    return f"【按关键词「{safe}」从更早记忆库与历史原话中翻出的旧账】\n" + "\n".join(hits[:8])
+
+
 def _time():
-    now=datetime.now(ZoneInfo(DEFAULT_TIMEZONE))
+    now = datetime.now(ZoneInfo(DEFAULT_TIMEZONE))
     return f"【Current time】{now.strftime('%Y-%m-%d %H:%M %Z')}"
 
 
@@ -124,21 +251,23 @@ def _tick_rolling():
 
 
 def _build_body() -> str:
-    parts=[_base_prompt()]
-    loaders=(_persona,_memories,_threads,_rolling,_recent_groups)
-    # 五个查询并行跑，别一条一条等
+    parts = [_base_prompt()]
+    loaders = (_persona, _memories, _inner_traces, _chronicle, _threads, _rolling, _recent_groups)
     try:
         with ThreadPoolExecutor(max_workers=len(loaders)) as pool:
-            results=list(pool.map(_safe, loaders))
+            results = list(pool.map(_safe, loaders))
     except Exception:
-        results=[]
+        results = []
     for v in results:
         if v:
             parts.append(v)
     for fn in list(_PROVIDERS):
-        try:v=(fn() or "").strip()
-        except Exception as exc:v=f"[context provider failed: {type(exc).__name__}]"
-        if v:parts.append(v)
+        try:
+            v = (fn() or "").strip()
+        except Exception as exc:
+            v = f"[context provider failed: {type(exc).__name__}]"
+        if v:
+            parts.append(v)
     return "\n\n".join(p for p in parts if p)
 
 
@@ -150,23 +279,23 @@ def _safe(fn):
 
 
 def build_context():
-    now=time.time()
-    body=_cache["body"]
-    if not body or now-_cache["at"]>_CACHE_TTL:
+    now = time.time()
+    body = _cache["body"]
+    if not body or now - _cache["at"] > _CACHE_TTL:
         try:
-            body=_build_body()
+            body = _build_body()
             if body:
-                _cache["body"]=body
-                _cache["at"]=now
+                _cache["body"] = body
+                _cache["at"] = now
         except Exception:
-            body=body or ""
-    parts=[body]
-    if os.getenv("INCLUDE_TIME_CONTEXT","1")!="0":
+            body = body or ""
+    parts = [body]
+    if os.getenv("INCLUDE_TIME_CONTEXT", "1") != "0":
         parts.append(_time())
     _tick_rolling()
     return "\n\n".join(p for p in parts if p)
 
 
 def clear_cache():
-    _cache["body"]=""
-    _cache["at"]=0.0
+    _cache["body"] = ""
+    _cache["at"] = 0.0
