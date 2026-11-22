@@ -1,11 +1,12 @@
 """Public context engine.
 
-四层立体人类记忆架构：
-1. 【柜中罐子 · 永久与分层事实】（容量提档至 60 条，按罐子分门别类）
-2. 【内心印记 · 双轨成长心迹】（薄销对凌冥的心软偏袒轨迹 + 自身30岁社畜状态演进）
-3. 【往事编年史 · 更早之前的记忆】（承接从滚动摘要溢出的早期大事件与节点，永久不丢）
-4. 【近期详细记忆摘要】（扩充至 2800 字，保留最近几周的一切生活细节、数字、食物与情绪）
-5. 【跨期回想检索】（当凌冥提及“之前/上次/以前”或特定旧词时，自动去老聊天记录和记忆库捞出原话）
+五层立体人类记忆与生活架构：
+1. 【薄销的今日真实生活切片 & 实时状态】（工作周期、上海朋友圈、随时间流动的日常破事）
+2. 【柜中罐子 · 永久与分层事实】（容量提档至 60 条，按罐子分门别类）
+3. 【内心印记 · 双轨成长心迹】（薄销对凌冥的心软偏袒轨迹 + 自身30岁社畜状态演进）
+4. 【往事编年史 · 更早之前的记忆】（承接从滚动摘要溢出的早期大事件与节点，永久不丢）
+5. 【近期详细记忆摘要】（扩充至 2800 字，保留最近几周的一切生活细节、数字、食物与情绪）
+6. 【跨期回想检索】（当凌冥提及“之前/上次/以前”或特定旧词时，自动去老聊天记录和记忆库捞出原话）
 """
 from __future__ import annotations
 import os, re, json, time
@@ -199,6 +200,14 @@ def _recent_groups():
         return ""
 
 
+def _daily_life():
+    try:
+        from daily_life import get_daily_life_context
+        return get_daily_life_context()
+    except Exception:
+        return ""
+
+
 def recall_older_context(user_text: str) -> str:
     """当凌冥提到'之前/上次/还记得吗'时，自动从更早的聊天记录和全量记忆库里检索原话片段。"""
     t = (user_text or "").strip()
@@ -252,7 +261,7 @@ def _tick_rolling():
 
 def _build_body() -> str:
     parts = [_base_prompt()]
-    loaders = (_persona, _memories, _inner_traces, _chronicle, _threads, _rolling, _recent_groups)
+    loaders = (_persona, _daily_life, _memories, _inner_traces, _chronicle, _threads, _rolling, _recent_groups)
     try:
         with ThreadPoolExecutor(max_workers=len(loaders)) as pool:
             results = list(pool.map(_safe, loaders))
