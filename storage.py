@@ -5,11 +5,13 @@ contains no personal table contents or IDs. Missing Supabase configuration simpl
 persistence instead of crashing the gateway.
 """
 from __future__ import annotations
-import logging
+import os, logging
 import requests
 from app_config import SUPABASE_URL, SUPABASE_KEY
 
 log = logging.getLogger(__name__)
+
+_SEED_CHRONICLE_FILE = "docs/long_term_chronicle_seed.txt"
 
 
 def enabled() -> bool:
@@ -91,4 +93,18 @@ def upsert_setting(key: str, value: str) -> None:
 
 def get_setting(key: str, default=None):
     rows = get("bot_settings", f"key=eq.{key}&select=value&limit=1")
-    return rows[0].get("value") if rows else default
+    val = rows[0].get("value") if rows else None
+    if val:
+        return val
+    # 如果数据库里还没种上往事编年史，自动从内置种子文件读取并回写进数据库
+    if key == "long_term_chronicle":
+        try:
+            if os.path.exists(_SEED_CHRONICLE_FILE):
+                with open(_SEED_CHRONICLE_FILE, "r", encoding="utf-8") as f:
+                    seed = f.read().strip()
+                if seed:
+                    upsert_setting("long_term_chronicle", seed)
+                    return seed
+        except Exception as exc:
+            log.warning("seed chronicle load failed: %s", exc)
+    return default
