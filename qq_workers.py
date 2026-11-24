@@ -61,11 +61,38 @@ def _strip_time_tags(s: str) -> str:
             return s
         s = n
 
+def _extract_plain_text(msg_obj) -> str:
+    """从NapCat的消息体（字符串或段落列表）中精准提取纯文本，过滤CQ码与引用污染。"""
+    if not msg_obj:
+        return ""
+    if isinstance(msg_obj, str):
+        cleaned = _clean_cq(msg_obj)
+        # 剥离多层嵌套的 [引用的那条|...] 标签
+        cleaned = re.sub(r'\[引用的那条｜[^\]]+\]\s*', '', cleaned)
+        cleaned = re.sub(r'^\[QQ\]\s*', '', cleaned)
+        return cleaned.strip()
+    if isinstance(msg_obj, list):
+        parts = []
+        for seg in msg_obj:
+            if isinstance(seg, dict):
+                stype = seg.get("type")
+                sdata = seg.get("data") or {}
+                if stype == "text":
+                    parts.append(sdata.get("text", ""))
+                elif stype == "image":
+                    parts.append("[图片]")
+                elif stype in ("reply", "at"):
+                    continue
+                elif stype == "face":
+                    parts.append("[表情]")
+        full = "".join(parts).strip()
+        full = re.sub(r'\[引用的那条｜[^\]]+\]\s*', '', full)
+        full = re.sub(r'^\[QQ\]\s*', '', full)
+        return _clean_cq(full)
+    return ""
+
 def _quoted_id(data):
-    raw = data.get("raw_message", "") or ""
-    m = _QUOTE_RE.search(raw)
-    if m:
-        return m.group(1)
+    """优先从 parsed message segment 提取 reply id，比正则 raw_message 更准。"""
     msg = data.get("message")
     if isinstance(msg, list):
         for seg in msg:
@@ -73,9 +100,32 @@ def _quoted_id(data):
                 d = seg.get("data") or {}
                 if d.get("id"):
                     return str(d.get("id"))
+    raw = data.get("raw_message", "") or ""
+    m = _QUOTE_RE.search(raw)
+    if m:
+        return m.group(1)
     return None
 
 async def _quoted_text(data):
+    """精准还原引用的原句内容。优先使用 NapCat 携带的 reply 载荷，避免 get_msg 错位。"""
+    # 1. 优先使用 OneBot v11 / NapCat 自带的 reply 字段
+    rep = data.get("reply")
+    if isinstance(rep, dict):
+        sender = rep.get("sender") or {}
+        suid = str(rep.get("user_id") or sender.get("user_id") or "")
+        name = sender.get("card") or sender.get("nickname") or ""
+        if BOT_ID and suid == BOT_ID:
+            who = "薄销"
+        elif OWNER_ID and suid == OWNER_ID:
+            who = OWNER_ALIAS
+        else:
+            who = name or "对方"
+        content = _extract_plain_text(rep.get("raw_message") or rep.get("message"))
+        if content:
+            if len(content) > 240: content = content[:240] + "…"
+            return f"[引用的那条｜{who}] {content}"
+
+    # 2. 降级通过 message_id 查询
     qid = _quoted_id(data)
     if not qid:
         return ""
@@ -87,16 +137,19 @@ async def _quoted_text(data):
     if not info:
         return ""
     sender = info.get("sender") or {}
-    name = sender.get("card") or sender.get("nickname") or str(info.get("user_id") or "")
-    content = _clean_cq(info.get("raw_message") or "")
-    if not content:
-        content = str(info.get("message") or "").strip()
-    content = content.strip()
+    suid = str(info.get("user_id") or sender.get("user_id") or "")
+    name = sender.get("card") or sender.get("nickname") or ""
+    if BOT_ID and suid == BOT_ID:
+        who = "薄销"
+    elif OWNER_ID and suid == OWNER_ID:
+        who = OWNER_ALIAS
+    else:
+        who = name or "对方"
+    content = _extract_plain_text(info.get("raw_message") or info.get("message"))
     if not content:
         return ""
     if len(content) > 240:
         content = content[:240] + "…"
-    who = name or "对方"
     return f"[引用的那条｜{who}] {content}"
 
 def _segments(text, fallback_reply_id=None):
