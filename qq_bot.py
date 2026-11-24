@@ -36,6 +36,18 @@ async def send_qq_msg(target_type,target_id,message):
     key="user_id" if target_type=="private" else "group_id"
     return await send_action(action,{key:int(target_id),"message":message})
 
+async def send_poke(target_type: str, user_id: int, group_id: int | None = None):
+    """Send a QQ poke (拍一拍) via NapCat / OneBot v11."""
+    try:
+        if target_type == "group" and group_id:
+            await send_action("group_poke", {"group_id": int(group_id), "user_id": int(user_id)})
+        else:
+            await send_action("friend_poke", {"user_id": int(user_id)})
+        return True
+    except Exception as exc:
+        log.warning("send_poke failed: %s", exc)
+        return False
+
 async def get_msg(message_id):
     r=await send_action_wait("get_msg",{"message_id":int(message_id)});return r.get("data") if r and r.get("status")=="ok" else None
 
@@ -84,7 +96,7 @@ async def websocket_endpoint(ws:WebSocket):
                 continue
             pt=data.get("post_type")
             if pt and pt!="meta_event":
-                log.info("qq event: post=%s type=%s uid=%s gid=%s len=%s",pt,data.get("message_type"),data.get("user_id"),data.get("group_id"),len(raw))
+                log.info("qq event: post=%s type=%s uid=%s gid=%s len=%s",pt,data.get("message_type") or data.get("notice_type"),data.get("user_id"),data.get("group_id"),len(raw))
                 asyncio.create_task(handle_event(data))
     except WebSocketDisconnect:
         log.warning("qq ws disconnected")

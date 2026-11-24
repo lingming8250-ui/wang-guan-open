@@ -16,8 +16,10 @@ BOT_ID=os.getenv("QQ_BOT_ID","");BOT_NAME=os.getenv("QQ_BOT_NAME","薄销");OWNE
 GROUP_IDS={x.strip() for x in os.getenv("QQ_GROUP_IDS","").split(",") if x.strip()}
 _private_pending=None;_group_pending={}
 _LAST_TEXT_TS=0.0
+_LAST_POKE_TS=0.0
 _REPLY_RE=re.compile(r'\[(?:REPLY|引用|回复)[:：]?\s*(-?\d+)?\]',re.I)
 _AT_RE=re.compile(r'\[(?:AT|艾特)[:：]\s*(\d+)\]',re.I)
+_POKE_TAG_RE=re.compile(r'\[(?:POKE|拍一拍|戳一戳)\]',re.I)
 _CQ_RE=re.compile(r'\[CQ:[^\]]+\]')
 _QUOTE_RE=re.compile(r'\[CQ:reply,[^\]]*?id=(-?\d+)',re.I)
 _STREAM_END=re.compile(r'[。！？!?…~\n]')
@@ -153,6 +155,7 @@ async def _quoted_text(data):
     return f"[引用的那条｜{who}] {content}"
 
 def _segments(text, fallback_reply_id=None):
+    text = _POKE_TAG_RE.sub('', text or '')
     reply_id = None
     m = _REPLY_RE.search(text)
     if m:
@@ -206,9 +209,19 @@ class _BubbleStreamer:
         self.sent = 0
         self.first = True
         self.dead = False
+        self.poked = False
+
+    async def _maybe_poke(self, raw_chunk: str):
+        if not self.poked and _POKE_TAG_RE.search(raw_chunk or ""):
+            self.poked = True
+            try:
+                from qq_bot import send_poke
+                await send_poke(self.scope, self.target)
+            except Exception:
+                pass
 
     def _prepare(self, chunk):
-        text = _clean_cq(_AT_RE.sub('', _REPLY_RE.sub('', chunk)))
+        text = _clean_cq(_POKE_TAG_RE.sub('', _AT_RE.sub('', _REPLY_RE.sub('', chunk))))
         text = _strip_time_tags(text).strip()
         if not text:
             return None
@@ -216,6 +229,7 @@ class _BubbleStreamer:
         return text, seg
 
     async def _push(self, chunk):
+        await self._maybe_poke(chunk)
         got = self._prepare(chunk)
         if not got:
             return False
@@ -246,7 +260,9 @@ class _BubbleStreamer:
                 break
             chunk = self.buf[:m.end()]
             self.buf = self.buf[m.end():]
-            if len(chunk.strip()) < 2:
+            if _POKE_TAG_RE.search(chunk):
+                await self._maybe_poke(chunk)
+            if len(_POKE_TAG_RE.sub('', chunk).strip()) < 2:
                 continue
             if await self._push(chunk) and self.sent < self.max_b:
                 await asyncio.sleep(self.gap)
@@ -254,6 +270,7 @@ class _BubbleStreamer:
     async def flush(self, full_text: str):
         if self.dead or self.sent >= self.max_b:
             return
+        await self._maybe_poke(full_text or self.buf)
         rest = self.buf
         self.buf = ""
         if self.sent == 0:
@@ -299,6 +316,10 @@ PRIVATE_PROMPT_INSTRUCTION = """【你是同一个人】
 问你现在用什么模型，直接报名字，一句话说完，不要说自己看不到、也不要扯后台权限。
 你有 `web_search` 联网搜索工具。只要凌冥问起近况、最新新闻、实时事件或者任何你拿不准的事实，立刻调用 web_search 查证，不要硬猜。查到之后用人话把关键信息说出来，别只说"查到了"。
 他引用了一条旧消息跟你说话时，前面会出现「[引用的那条｜谁] 原文」，那是他指着那句话在问你，接着那句往下答，别装没看见。
+
+【拍一拍（戳一戳）互动能力】
+- 当凌冥在 QQ 上双击拍你头像时，你会收到「[拍了拍你]」（系统同时会自动帮你反手拍他一下）。
+- 如果你想主动拍一拍凌冥（比如他让你拍他、或者你想逗他/哄他），只需在回复里加上 `[拍一拍]`，系统就会自动在 QQ 上拍他的头像（该标记会自动剥离，不会作为文字发出去）。
 
 【图片与截图阅读说明】
 凌冥发来商品截图、网页截图、照片时，后台会自动解析出图片里的文字和具体内容（如 [附图内容: ...]），你必须仔细阅读这些信息并自然回应他，绝对严禁回答「我看不到图片」「接口看不到你甩过来的图片」「图没刷出来」！
@@ -532,7 +553,13 @@ async def _group_reply(gid, last_msg_id=None):
         text, _ = await call_llm([{"role":"system","content":instruction}]+hist, max_tokens=65, channel="qq")
         reply = (text or "").strip()
         if not reply or "PASS" in reply: return
-        clean=_REPLY_RE.sub('',_AT_RE.sub('',reply)).strip()
+        if _POKE_TAG_RE.search(reply) and OWNER_ID:
+            try:
+                from qq_bot import send_poke
+                await send_poke("group", int(OWNER_ID), int(gid))
+            except Exception:
+                pass
+        clean=_POKE_TAG_RE.sub('',_REPLY_RE.sub('',_AT_RE.sub('',reply))).strip()
         chunks = _split_into_bubbles(clean, max_b=2)
         for i, chunk in enumerate(chunks):
             if chunk:
@@ -602,9 +629,67 @@ def _has_image(data) -> bool:
     return False
 
 
+async def _handle_poke_notice(data):
+    """处理 QQ 拍一拍（poke）通知事件，支持感知与反手回拍。"""
+    global _private_pending, _LAST_POKE_TS
+    if data.get("notice_type") != "notify" or data.get("sub_type") != "poke":
+        return
+    uid = str(data.get("user_id") or data.get("sender_id") or "")
+    target_id = str(data.get("target_id") or "")
+    gid = str(data.get("group_id") or "")
+
+    # 忽略机器人自己发出的拍一拍，严防死循环
+    if not uid or (BOT_ID and uid == BOT_ID):
+        return
+    # 只响应拍薄销（target_id == BOT_ID）的事件
+    if BOT_ID and target_id and target_id != BOT_ID:
+        return
+
+    now = time.time()
+    # 5秒防抖冷却，避免连续狂拍触发刷屏
+    if now - _LAST_POKE_TS < 5.0:
+        return
+    _LAST_POKE_TS = now
+
+    from qq_bot import send_poke
+    # 私聊拍一拍
+    if not gid:
+        if not OWNER_ID or uid != OWNER_ID:
+            return
+        save_message("user", "[QQ] [拍了拍你]", scene="message", source="qq")
+        try:
+            topic_note("message", "user", "[QQ] [拍了拍你]")
+        except Exception:
+            pass
+        # 反手拍回去
+        await asyncio.sleep(random.uniform(0.4, 0.9))
+        await send_poke("private", int(OWNER_ID))
+        if _private_pending and not _private_pending.done():
+            _private_pending.cancel()
+        _private_pending = asyncio.create_task(_private_reply())
+        return
+
+    # 群聊拍一拍
+    if GROUP_IDS and gid not in GROUP_IDS:
+        return
+    llm_name = OWNER_ALIAS if (OWNER_ID and uid == OWNER_ID) else uid
+    save_message("user", f"{llm_name}: [拍了拍你]", scene=f"group_qq_{gid}", source="qq-group")
+    if OWNER_ID and uid == OWNER_ID:
+        await asyncio.sleep(random.uniform(0.4, 0.9))
+        await send_poke("group", int(uid), int(gid))
+    old = _group_pending.get(gid)
+    if not old or old.done():
+        _group_pending[gid] = asyncio.create_task(_group_reply(gid))
+
+
 async def handle_event(data):
     global _private_pending, _LAST_TEXT_TS
-    if data.get("post_type")!="message":return
+    pt = data.get("post_type")
+    if pt == "notice":
+        await _handle_poke_notice(data)
+        return
+    if pt != "message":
+        return
     typ=data.get("message_type","");uid=str(data.get("user_id",""));raw=data.get("raw_message","") or "";mid=data.get("message_id")
     if typ=="private":
         if not OWNER_ID or uid!=OWNER_ID:return
