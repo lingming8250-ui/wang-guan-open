@@ -6,7 +6,8 @@
 3. 【内心印记 · 双轨成长心迹】（薄销对凌冥的心软偏袒轨迹 + 自身30岁社畜状态演进）
 4. 【往事编年史 · 更早之前的记忆】（承接从滚动摘要溢出的早期大事件与节点，永久不丢）
 5. 【近期详细记忆摘要】（扩充至 2800 字，保留最近几周的一切生活细节、数字、食物与情绪）
-6. 【跨期回想检索】（当凌冥提及“之前/上次/以前”或特定旧词时，自动去老聊天记录和记忆库捞出原话）
+6. 【QQ私聊实时对话流】（跨窗口最新原话，消除滚动摘要未触发前的跨端记忆时滞）
+7. 【跨期回想检索】（当凌冥提及“之前/上次/以前”或特定旧词时，自动去老聊天记录和记忆库捞出原话）
 """
 from __future__ import annotations
 import os, re, json, time
@@ -186,6 +187,30 @@ def _rolling():
     return head + "\n" + content
 
 
+def _recent_private():
+    """实时注入最新的QQ私聊对话流，保证外部客户端（如Kelivo）与QQ无缝实时对齐，不产生时间差"""
+    try:
+        from conversation_store import recent_private
+        rows = recent_private(limit=18)
+        if not rows:
+            return ""
+        lines = []
+        for r in rows:
+            c = (r.get("content") or "").strip()
+            if c.startswith("[QQ] "):
+                c = c[5:].strip()
+            dt = _short_date(r.get("created_at"))
+            who = "凌冥" if r.get("role") == "user" else "薄销"
+            if c:
+                prefix = f"〔{dt}〕" if dt else ""
+                lines.append(f"{prefix}{who}: {c}")
+        if not lines:
+            return ""
+        return "【QQ私聊实时对话流（最新原话，各窗口神经与记忆绝对实时同步）】\n" + "\n".join(lines)
+    except Exception:
+        return ""
+
+
 def _recent_groups():
     try:
         from conversation_store import recent_groups
@@ -261,7 +286,7 @@ def _tick_rolling():
 
 def _build_body() -> str:
     parts = [_base_prompt()]
-    loaders = (_persona, _daily_life, _memories, _inner_traces, _chronicle, _threads, _rolling, _recent_groups)
+    loaders = (_persona, _daily_life, _memories, _inner_traces, _chronicle, _threads, _rolling, _recent_private, _recent_groups)
     try:
         with ThreadPoolExecutor(max_workers=len(loaders)) as pool:
             results = list(pool.map(_safe, loaders))
