@@ -29,40 +29,75 @@ def _default_reminder_sender():
 
 
 async def reminder_checker(send_callback=None):
-    sender=send_callback or _default_reminder_sender()
-    if sender is None:
-        log.info("Reminder checker has no delivery transport; due reminders will remain pending")
+    """同时支持 Telegram 与 QQ 私聊的定时器/倒计时检查器。到点自动推送到 QQ。"""
+    owner_id = os.getenv("QQ_OWNER_ID", "").strip()
+    sender = send_callback or _default_reminder_sender()
+    
     while True:
-        await asyncio.sleep(60)
-        rows=get("reminders",f"is_done=eq.false&trigger_at=lte.{datetime.now(timezone.utc).isoformat()}&order=trigger_at.asc")
+        # 10 秒轮询一次，保证 5 分钟、10 分钟倒计时精准触发
+        await asyncio.sleep(10)
+        now_iso = datetime.now(timezone.utc).isoformat()
+        rows = get("reminders", f"is_done=eq.false&trigger_at=lte.{now_iso}&order=trigger_at.asc")
+        if not rows:
+            continue
+
         for row in rows:
-            msg=(row.get("message") or "").strip()
+            msg = (row.get("message") or "").strip()
+            repeat = (row.get("repeat_type") or "once").strip().lower()
+            rid = row.get("id")
+
             if not msg:
-                update("reminders",f"id=eq.{row['id']}",{"is_done":True})
+                update("reminders", f"id=eq.{rid}", {"is_done": True})
                 continue
-            if sender is None:
-                continue
+
+            # 优先检查 QQ 连接通道
+            qq_sent = False
             try:
-                ok=bool(await sender(msg))
+                import qq_bot
+                if qq_bot._conn is not None and owner_id:
+                    from qq_workers import _split_into_bubbles, _segments
+                    from conversation_store import save_message
+                    from qq_bot import send_qq_msg
+
+                    chunks = _split_into_bubbles(f"【到时间啦】{msg}")
+                    for i, chunk in enumerate(chunks):
+                        if chunk:
+                            save_message("assistant", chunk, scene="message", source="qq-reminder")
+                            await send_qq_msg("private", int(owner_id), _segments(chunk))
+                            if i < len(chunks) - 1:
+                                await asyncio.sleep(0.5)
+                    qq_sent = True
+                    log.info("reminder successfully delivered to QQ id=%s: %s", rid, msg)
             except Exception as exc:
-                log.warning("reminder delivery failed id=%s: %s",row.get("id"),exc)
-                ok=False
-            if ok:
-                repeat=(row.get("repeat_type") or "once").strip().lower()
-                if repeat in {"daily","weekly"}:
+                log.warning("qq reminder delivery failed id=%s: %s", rid, exc)
+                qq_sent = False
+
+            # 若 QQ 未发成功且有外部 fallback sender，尝试 fallback
+            fallback_sent = False
+            if not qq_sent and sender is not None:
+                try:
+                    fallback_sent = bool(await sender(msg))
+                except Exception as exc:
+                    log.warning("fallback reminder delivery failed id=%s: %s", rid, exc)
+
+            if qq_sent or fallback_sent:
+                if repeat in {"daily", "weekly"}:
                     from dateutil.parser import isoparse
                     from datetime import timedelta
                     try:
-                        next_at=isoparse(str(row.get("trigger_at") or ""))
-                        step=timedelta(days=1 if repeat=="daily" else 7)
-                        now_utc=datetime.now(timezone.utc)
+                        next_at = isoparse(str(row.get("trigger_at") or ""))
+                        step = timedelta(days=1 if repeat == "daily" else 7)
+                        now_utc = datetime.now(timezone.utc)
                         while next_at <= now_utc:
                             next_at += step
-                        update("reminders",f"id=eq.{row['id']}",{"trigger_at":next_at.isoformat(),"is_done":False})
+                        update("reminders", f"id=eq.{rid}", {"trigger_at": next_at.isoformat(), "is_done": False})
                     except Exception as exc:
-                        log.warning("failed to reschedule recurring reminder id=%s: %s",row.get("id"),exc)
+                        log.warning("failed to reschedule recurring reminder id=%s: %s", rid, exc)
+                        update("reminders", f"id=eq.{rid}", {"is_done": True})
                 else:
-                    update("reminders",f"id=eq.{row['id']}",{"is_done":True})
+                    # 单次倒计时：提醒完立即永久标记完成，绝不重复提醒！
+                    update("reminders", f"id=eq.{rid}", {"is_done": True})
+
 
 # 每天固定的主动关怀时刻（北京时间，分钟数）
 PROACTIVE_SLOTS = (
