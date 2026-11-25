@@ -1,6 +1,7 @@
 """Generic QQ message worker. Keeps owner restrictions, group PASS and real reply/@ tags."""
 from __future__ import annotations
 import os,asyncio,json,random,re,time
+from collections import OrderedDict
 from context import build_context,recall_older_context
 from conversation_store import save_message,recent,recent_private,recent_timed
 from llm_runtime import call_llm
@@ -24,6 +25,18 @@ _CQ_RE=re.compile(r'\[CQ:[^\]]+\]')
 _QUOTE_RE=re.compile(r'\[CQ:reply,[^\]]*?id=(-?\d+)',re.I)
 _STREAM_END=re.compile(r'[。！？!?…~\n]')
 _TIME_TAG_RE=re.compile(r'^\s*[（(]\s*(?:刚刚|今天|昨天|前天|\d+\s*分钟前|\d+\s*小时前|\d+\s*月\d+\s*日|\d{4}年)[^）)]*[）)]\s*')
+
+# 内存精准消息缓存池：防止 NapCat reply id 错位抓错历史记录
+_MSG_CACHE: OrderedDict[str, dict] = OrderedDict()
+_MAX_CACHE = 500
+
+def _cache_message(mid: str | int | None, who: str, text: str):
+    if not mid or not text:
+        return
+    key = str(mid)
+    _MSG_CACHE[key] = {"who": who, "text": text}
+    if len(_MSG_CACHE) > _MAX_CACHE:
+        _MSG_CACHE.popitem(last=False)
 
 MIN_BUBBLES = 1
 MAX_BUBBLES = 5
@@ -109,8 +122,8 @@ def _quoted_id(data):
     return None
 
 async def _quoted_text(data):
-    """精准还原引用的原句内容。优先使用 NapCat 携带的 reply 载荷，避免 get_msg 错位。"""
-    # 1. 优先使用 OneBot v11 / NapCat 自带的 reply 字段
+    """精准还原引用的原句内容。防止 ID 错位导致的张冠李戴。"""
+    # 1. 优先使用 OneBot v11 / NapCat 事件自带的 reply 载荷
     rep = data.get("reply")
     if isinstance(rep, dict):
         sender = rep.get("sender") or {}
@@ -127,10 +140,17 @@ async def _quoted_text(data):
             if len(content) > 240: content = content[:240] + "…"
             return f"[引用的那条｜{who}] {content}"
 
-    # 2. 降级通过 message_id 查询
+    # 2. 命中内存缓存池
     qid = _quoted_id(data)
     if not qid:
         return ""
+    if qid in _MSG_CACHE:
+        item = _MSG_CACHE[qid]
+        text = item["text"]
+        if len(text) > 240: text = text[:240] + "…"
+        return f"[引用的那条｜{item['who']}] {text}"
+
+    # 3. 降级通过 message_id 查询 NapCat 接口
     try:
         from qq_bot import get_msg
         info = await get_msg(qid)
@@ -239,8 +259,10 @@ class _BubbleStreamer:
             topic_note(self.scene, "assistant", text)
         except Exception:
             pass
-        ok = await self.send_fn(self.scope, self.target, seg)
-        if not ok:
+        res = await self.send_fn(self.scope, self.target, seg)
+        if isinstance(res, dict) and res.get("data") and res["data"].get("message_id"):
+            _cache_message(res["data"]["message_id"], "薄销", text)
+        if not res:
             log.warning("qq send returned falsy for scene=%s", self.scene)
         self.sent += 1
         self.first = False
@@ -565,7 +587,9 @@ async def _group_reply(gid, last_msg_id=None):
             if chunk:
                 save_message("assistant", chunk, scene=scene, source="qq-group")
                 seg_payload = _segments(reply if i==0 and _REPLY_RE.search(reply) else chunk, fallback_reply_id=last_msg_id if i==0 and _REPLY_RE.search(reply) else None)
-                await send_qq_msg("group", int(gid), seg_payload)
+                res = await send_qq_msg("group", int(gid), seg_payload)
+                if isinstance(res, dict) and res.get("data") and res["data"].get("message_id"):
+                    _cache_message(res["data"]["message_id"], "薄销", chunk)
                 if i < len(chunks) - 1:
                     await asyncio.sleep(random.uniform(0.8, 1.4))
     except asyncio.CancelledError:pass
@@ -695,6 +719,11 @@ async def handle_event(data):
         if not OWNER_ID or uid!=OWNER_ID:return
 
         text = await _parse_images_and_text(data)
+        
+        # 记录收到的用户消息到内存缓存
+        if mid and text:
+            _cache_message(mid, OWNER_ALIAS, text)
+
         quoted = await _quoted_text(data)
         if quoted:
             text = f"{quoted}\n{text}".strip() if text else quoted
@@ -736,6 +765,11 @@ async def handle_event(data):
     is_at=bool(BOT_ID and f"[CQ:at,qq={BOT_ID}" in raw)
     is_reply=bool("[CQ:reply" in raw)
     text=_clean_cq(raw) or "(sent a non-text message)"
+    
+    # 记录群消息到内存缓存
+    if mid and text:
+        _cache_message(mid, llm_name, text)
+
     quoted=await _quoted_text(data)
     if quoted:
         text=f"{quoted}\n{text}"
