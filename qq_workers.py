@@ -403,7 +403,7 @@ async def _maybe_command(text: str) -> bool:
 
     if raw[0] in ("/", "／", "!", "！"):
         body = raw[1:].strip()
-    elif raw in ("模型", "帮助", "菜单", "记忆", "待确认", "罐子", "印记", "心迹", "往事"):
+    elif raw in ("模型", "帮助", "菜单", "记忆", "待确认", "罐子", "印记", "心迹", "往事", "冰箱", "翻包", "随身包", "包里"):
         body = raw
     else:
         body = ""
@@ -428,6 +428,24 @@ async def _maybe_command(text: str) -> bool:
             clear_cache("qq")
             ctx_cache_reset()
             await reply(f"换成 {rest} 了，下一条生效。")
+            return True
+        if body in ("冰箱", "看冰箱", "查冰箱"):
+            try:
+                from daily_life import get_current_fridge
+                f_items = get_current_fridge()
+                lines = [f"· {it}" for it in f_items]
+                await reply("薄销大平层冰箱里的存货：\n" + "\n".join(lines))
+            except Exception:
+                await reply("打开冰箱瞅了一眼，冷气直冒，里面的东西改天再给你报。")
+            return True
+        if body in ("翻包", "随身包", "包里", "看包"):
+            try:
+                from daily_life import get_current_bag
+                b_items = get_current_bag()
+                lines = [f"· {it}" for it in b_items]
+                await reply("薄销随身公文包里倒出来的破烂：\n" + "\n".join(lines))
+            except Exception:
+                await reply("包拉链卡住了，等会儿拽开再看。")
             return True
         if body in ("罐子",):
             rows = get("memories", "category=like.罐子:*&order=id.desc&limit=15&select=id,content,category")
@@ -471,7 +489,7 @@ async def _maybe_command(text: str) -> bool:
             await reply(f"删了 {n} 条。" if n else "没给编号。")
             return True
         if body in ("帮助", "菜单"):
-            await reply("模型 —— 看现在用哪个\n模型 xxx —— 直接换\n罐子 —— 看柜中罐子细节\n印记 —— 看薄销的内心印记\n往事 —— 看远期编年史\n记忆 —— 看待确认候选\n记忆确认/作废 编号")
+            await reply("模型 —— 看现在用哪个\n模型 xxx —— 直接换\n冰箱 —— 看大平层冰箱实物\n翻包 —— 看薄销随身带的物品\n罐子 —— 看柜中罐子细节\n印记 —— 看薄销的内心印记\n往事 —— 看远期编年史\n记忆 —— 看待确认候选\n记忆确认/作废 编号")
             return True
     except Exception:
         log.exception("command failed")
