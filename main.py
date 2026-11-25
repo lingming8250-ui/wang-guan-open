@@ -696,6 +696,14 @@ async def chat_completions(request: Request):
 async def _lifespan(app):
     tasks = []
     tasks.append(_asyncio.create_task(auto_ensure_full_vocab()))
+    # 将倒计时/提醒轮询直接挂进持有 WebSocket 的主 Web 进程，彻底打通 QQ 直连推送！
+    try:
+        from background_tasks import reminder_checker
+        tasks.append(_asyncio.create_task(reminder_checker()))
+        log.info("reminder_checker loop started in web process with active QQ ws")
+    except Exception:
+        log.exception("failed to start reminder_checker in web process")
+
     if os.environ.get("WX_ILINK_TOKEN") or os.environ.get("SUPABASE_URL"):
         try:
             from wx_bot import async_wx_bot
