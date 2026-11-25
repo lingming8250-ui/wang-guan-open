@@ -1,13 +1,9 @@
 """Public context engine.
 
-五层立体人类记忆与生活架构：
-1. 【薄销的今日真实生活切片 & 实时状态】（工作周期、上海朋友圈、随时间流动的日常破事）
-2. 【柜中罐子 · 永久与分层事实】（容量提档至 60 条，按罐子分门别类）
-3. 【内心印记 · 双轨成长心迹】（薄销对凌冥的心软偏袒轨迹 + 自身30岁社畜状态演进）
-4. 【往事编年史 · 更早之前的记忆】（承接从滚动摘要溢出的早期大事件与节点，永久不丢）
-5. 【近期详细记忆摘要】（扩充至 2800 字，保留最近几周的一切生活细节、数字、食物与情绪）
-6. 【QQ私聊实时对话流】（跨窗口最新原话，消除滚动摘要未触发前的跨端记忆时滞）
-7. 【跨期回想检索】（当凌冥提及“之前/上次/以前”或特定旧词时，自动去老聊天记录和记忆库捞出原话）
+优化前缀缓存架构：
+将长期静态前缀（系统设定、人设特征、核心事实、柜中罐子、内心印记、往事编年史）严格放在头部，
+确保命中 Gemini / 中转站的前缀缓存（Prompt Cache），大幅降低 Token 消耗与计费。
+而随时间变化的动态生活切片、近期对话流、当前时间则作为尾部注入。
 """
 from __future__ import annotations
 import os, re, json, time
@@ -21,7 +17,7 @@ from storage import get, get_setting
 ContextProvider = Callable[[], str]
 _PROVIDERS: list[ContextProvider] = []
 
-_CACHE_TTL = float(os.getenv("CONTEXT_CACHE_TTL", "60"))
+_CACHE_TTL = float(os.getenv("CONTEXT_CACHE_TTL", "180"))
 _MEMORY_LIMIT = int(os.getenv("CONTEXT_MEMORY_LIMIT", "60"))
 _cache = {"body": "", "at": 0.0}
 
@@ -285,8 +281,19 @@ def _tick_rolling():
 
 
 def _build_body() -> str:
+    # 严格按照“稳定静态 -> 半静态 -> 动态”的顺序排序，最大化前缀匹配并触发 Prompt Cache
     parts = [_base_prompt()]
-    loaders = (_persona, _daily_life, _memories, _inner_traces, _chronicle, _threads, _rolling, _recent_private, _recent_groups)
+    loaders = (
+        _persona,       # 静态人设
+        _memories,      # 长期分层记忆与罐子（极稳定）
+        _chronicle,     # 远期编年史（极稳定）
+        _inner_traces,  # 双轨心迹
+        _rolling,       # 滚动大摘要
+        _threads,       # 待办/未结线程
+        _daily_life,    # 当日生活切片
+        _recent_groups, # 群聊动态
+        _recent_private # QQ最新原话流（变化频率最高，置于末尾）
+    )
     try:
         with ThreadPoolExecutor(max_workers=len(loaders)) as pool:
             results = list(pool.map(_safe, loaders))
