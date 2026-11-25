@@ -29,9 +29,13 @@ def _default_reminder_sender():
 
 
 async def reminder_checker(send_callback=None):
-    """同时支持 Telegram 与 QQ 私聊的定时器/倒计时检查器。到点自动推送到 QQ。"""
+    """同时支持 Telegram 与 QQ 私聊的定时器/倒计时检查器。
+    
+    采用真实的薄销人格动态生成口语提醒，绝不发呆板的系统固定文案！
+    """
     owner_id = os.getenv("QQ_OWNER_ID", "").strip()
     sender = send_callback or _default_reminder_sender()
+    tz = ZoneInfo(DEFAULT_TIMEZONE)
     
     while True:
         # 10 秒轮询一次，保证 5 分钟、10 分钟倒计时精准触发
@@ -55,19 +59,39 @@ async def reminder_checker(send_callback=None):
             try:
                 import qq_bot
                 if qq_bot._conn is not None and owner_id:
-                    from qq_workers import _split_into_bubbles, _segments
+                    from context import build_context
                     from conversation_store import save_message
+                    from qq_workers import _split_into_bubbles, _segments
                     from qq_bot import send_qq_msg
 
-                    chunks = _split_into_bubbles(f"【到时间啦】{msg}")
+                    now_local = datetime.now(tz)
+                    hist = recent("message", 15)
+                    
+                    # 动态调取薄销真实人设生成自然的真人催促/提醒
+                    prompt = (
+                        build_context()
+                        + f"\n\n【现实时间】{now_local.strftime('%H:%M')}\n"
+                        + f"【触发任务】你在几分钟前答应了凌冥到点提醒他：{msg}。\n"
+                        + "现在时间刚到！请用薄销平时说话的语气、神态，自然地拍拍他、叫他或者催他一句（像随手打字发QQ）。\n"
+                        + "要求：1到2句简短口语，绝对禁止发生硬机械的系统广播格式（如禁止带【到时间啦】这种死板标签），就像真人到点随口喊他一样自然！"
+                    )
+                    messages = [{"role": "system", "content": prompt}]
+                    if hist:
+                        messages.extend(hist[-6:])
+                    messages.append({"role": "user", "content": f"(系统定时触发：你刚才定的「{msg}」倒计时到点了，叫他一声)"})
+
+                    dynamic_text, _ = await call_llm(messages, max_tokens=120, channel="qq")
+                    final_msg = (dynamic_text or "").strip() or f"喂，到点了，刚才说的{msg}，赶紧的。"
+
+                    chunks = _split_into_bubbles(final_msg)
                     for i, chunk in enumerate(chunks):
                         if chunk:
                             save_message("assistant", chunk, scene="message", source="qq-reminder")
                             await send_qq_msg("private", int(owner_id), _segments(chunk))
                             if i < len(chunks) - 1:
-                                await asyncio.sleep(0.5)
+                                await asyncio.sleep(random.uniform(0.6, 1.2))
                     qq_sent = True
-                    log.info("reminder successfully delivered to QQ id=%s: %s", rid, msg)
+                    log.info("dynamic reminder delivered to QQ id=%s: %s -> %s", rid, msg, final_msg[:60])
             except Exception as exc:
                 log.warning("qq reminder delivery failed id=%s: %s", rid, exc)
                 qq_sent = False
