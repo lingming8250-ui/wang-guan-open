@@ -81,6 +81,18 @@ def _pick(pool: list, seed_str: str) -> str:
     return pool[h % len(pool)]
 
 
+def get_current_fridge() -> list[str]:
+    now = datetime.now(_TZ)
+    today_key = now.strftime("%Y-%m-%d")
+    return _pick(_FRIDGE_ITEMS_POOL, today_key + "-fridge")
+
+
+def get_current_bag() -> list[str]:
+    now = datetime.now(_TZ)
+    today_key = now.strftime("%Y-%m-%d")
+    return _pick(_BAG_ITEMS_POOL, today_key + "-bag")
+
+
 def _time_slot_status(now: datetime) -> str:
     wd = now.weekday()
     hm = now.hour + now.minute / 60.0
@@ -143,8 +155,8 @@ def get_daily_life_context() -> str:
     slot = _time_slot_status(now)
 
     # 抽取今日冰箱与翻包状态
-    fridge_list = _pick(_FRIDGE_ITEMS_POOL, today_key + "-fridge")
-    bag_list = _pick(_BAG_ITEMS_POOL, today_key + "-bag")
+    fridge_list = get_current_fridge()
+    bag_list = get_current_bag()
     fridge_str = "、".join(fridge_list)
     bag_str = "、".join(bag_list)
 
