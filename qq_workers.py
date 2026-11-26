@@ -271,42 +271,23 @@ class _BubbleStreamer:
         return True
 
     async def feed(self, delta: str):
+        # 收集流式输出到缓冲区，不再在流式途中抢先发送，彻底避免与 flush 双重发送！
         if self.dead:
             return
         self.buf += delta
-        if self.sent == 0 and len(self.buf) < 8 and not _STREAM_END.search(self.buf):
-            return
-        if "<think" in self.buf and "</think>" not in self.buf:
-            return
-        # 预先切句，但在达到限制前必须把剩余完整内容留在 buf 供 flush 一并发送，绝不丢字
-        while self.sent < self.max_b - 1:
-            m = _STREAM_END.search(self.buf)
-            if not m:
-                break
-            chunk = self.buf[:m.end()]
-            self.buf = self.buf[m.end():]
-            if _POKE_TAG_RE.search(chunk):
-                await self._maybe_poke(chunk)
-            if len(_POKE_TAG_RE.sub('', chunk).strip()) < 2:
-                continue
-            if await self._push(chunk) and self.sent < self.max_b - 1:
-                await asyncio.sleep(self.gap)
+        if _POKE_TAG_RE.search(delta):
+            await self._maybe_poke(delta)
 
     async def flush(self, full_text: str):
-        if self.dead:
+        if self.dead or self.sent >= self.max_b:
             return
-        await self._maybe_poke(full_text or self.buf)
-        rest = self.buf
+        # 使用完整的最终文本
+        text_to_send = (full_text or self.buf).strip()
         self.buf = ""
-        # 优先使用完整的 full_text 避免流式拼接遗漏
-        source_text = full_text if (full_text and len(full_text) >= len(rest)) else rest
-        if self.sent == 0:
-            chunks = _split_into_bubbles(source_text, max_b=self.max_b)
-        elif source_text.strip():
-            remaining_slots = max(1, self.max_b - self.sent)
-            chunks = _split_into_bubbles(source_text, max_b=remaining_slots)
-        else:
-            chunks = []
+        if not text_to_send:
+            return
+        await self._maybe_poke(text_to_send)
+        chunks = _split_into_bubbles(text_to_send, max_b=self.max_b)
         for i, chunk in enumerate(chunks):
             if await self._push(chunk) and i < len(chunks) - 1:
                 await asyncio.sleep(max(0.35, min(0.9, len(chunk) * 0.04 + 0.3)))
