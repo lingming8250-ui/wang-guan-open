@@ -1,8 +1,8 @@
 """Generic media helpers for vision, STT and TTS.
 
-回到最初版本：识图与聊天彻底解耦。
-单张图片走干净的专用提示词，完全不附带任何敏感人设，彻底避开 Google 审核拦截。
-仅额外保留图片压缩，避免原图几兆导致超时卡死。
+识图优化：
+针对商品详情、购物截图等高频图，强制在最前面提取核心文本标题和商品名字，
+防止视觉模型写一堆画面视觉描述导致真正的商品标题被截断或漏掉。
 """
 from __future__ import annotations
 import os,io,base64,tempfile,requests,asyncio,re
@@ -52,7 +52,14 @@ async def recognize_image_url(url,caption=""):
     data=await asyncio.to_thread(_download,url,{"User-Agent":"wang-guan-open/1.0"})
     small=await asyncio.to_thread(_shrink,data)
     b64="data:image/jpeg;base64,"+base64.b64encode(small).decode()
-    prompt="Describe the image directly and comprehensively. If there is text or numbers, transcribe them accurately. If it is a meme/sticker, explain its meaning and emotion."
+    prompt=(
+        "You are an OCR and visual recognition tool. "
+        "CRITICAL REQUIREMENT: "
+        "1. If this is an e-commerce page, product screenshot, chat screenshot, or document: "
+        "FIRST directly output the EXACT product title, store/brand name, text headers, and key details at the very beginning of your response. "
+        "2. Do NOT spend long paragraphs describing hands, background, or phone status bars before the actual product title. Put the primary readable text FIRST. "
+        "3. If it's a meme or photo, describe its content and emotion clearly."
+    )
     if caption:prompt+=f" The sender also wrote: {caption!r}; use it only as context."
     return await _vision({"max_tokens":1200,"messages":[{"role":"user","content":[{"type":"text","text":prompt},{"type":"image_url","image_url":{"url":b64}}]}]})
 
