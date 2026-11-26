@@ -1,21 +1,23 @@
 """薄销的每日真实生活切片、固定人际圈与实时时间段状态。
 
-融合《独立生活&随机事件》、《真实人类》、《主动分享》及《自由意志》内核：
-- 具备生物肉体摩擦：上火起痘、久坐腰酸背痛、犯困、胃反酸、排泄与饮食因果
-- 真实品牌与具体消费：盒马打折和牛/伊比利亚黑猪、Manner燕麦拿铁、朝日生啤、Aesop香芹籽/雪松、无印良品
-- 蝴蝶效应与生理Debuff：头一天熬夜或喝大酒第二天必有宿醉/眼睛干涩反应
-- 冰箱与随身翻包动态：真实、随生活消耗变化
+升级：
+引入【LLM 每日凌晨动态生活推演引擎】与数据库持久化缓存！
+每天凌晨 04:00 由 LLM 结合当周真实日程、前一天残留（蝴蝶效应）自主生成今天的：
+1. 真实生活切片（上午/中午/下午/傍晚的具体真实事件与倒霉/确幸）
+2. 冰箱当前真实存货（冷藏与冷冻品牌实物）
+3. 随身公文包里当天的物件
+生成后存入数据库 bot_settings 表（key: `daily_life_state_YYYY-MM-DD`），一天内保持一致，绝不再撞车复读！
 """
 from __future__ import annotations
-import json, hashlib, logging
+import json, logging
 from datetime import datetime
 from zoneinfo import ZoneInfo
 from app_config import DEFAULT_TIMEZONE
+from storage import get_setting, upsert_setting
 
 log = logging.getLogger(__name__)
 _TZ = ZoneInfo(DEFAULT_TIMEZONE)
 
-# 薄销的固定上海人际关系与生活锚点
 _SOCIAL_CIRCLE = (
     "【你的固定生活圈与熟人（自然提及，绝不刻意堆砌）】\n"
     "- 下属/同事：小周（刚毕业来财务部的实习生，总贴错外贸报销单）、李姐（出纳老会计，爱在办公室分坚果话梅）、王总（抠门爱画饼的老板，常临时要外贸汇损表）。\n"
@@ -24,74 +26,76 @@ _SOCIAL_CIRCLE = (
     "抽屉里常备薄荷含片、人工泪液和胃药；常喝Manner或楼下罗森冰美式；耳机里常放 toe、数学摇滚；偶尔也会被拉链卡住、数据线打结、算错满减犯蠢。"
 )
 
-# 动态冰箱与大平层随身物品库（随日期自然流动映射真实品牌）
-_FRIDGE_ITEMS_POOL = [
-    ["盒马日日鲜无抗鲜牛奶（还剩半盒）", "两盒三得利无糖乌龙茶", "半盒临期的明治黑巧克力", "前天煎剩下的澳洲M5和牛（用保鲜膜封着）", "两罐朝日辛口生啤酒", "一小罐老干妈和李锦记蒸鱼豉油", "冷冻层塞着两包湾仔码头三鲜水饺和几个冰球模具"],
-    ["光明致优鲜牛奶（开封第二天）", "三罐屈臣氏苏打水", "半盒在永辉买的小番茄（有点发蔫）", "一袋减脂荞麦面和两块暴肌独角兽鸡胸肉", "一盒生巧和半个用锡纸包着的西柚", "冷冻层里有两块Costco买的冷冻巴沙鱼柳和一盒哈根达斯"],
-    ["两瓶东方树叶青柑普洱", "一盒娟姗纯牛奶", "老陈上次落下的半瓶尊尼获加黑牌威士忌", "吃剩打包的半份潮汕牛肉（打算煮面垫肚子）", "半袋吐司面包（明天到期）", "冷冻层塞满了做冰美式用的老冰块和速冻日式乌冬面"],
-]
+_FALLBACK_DEFAULT = {
+    "today_story": "- 上午：在工位审单拉Excel透视表，喝了杯Manner热拿铁烫了舌尖。\n- 中午：去吃了园区后门的本帮葱油拌面，面有点坨。\n- 下午：审模具折旧表，久坐尾椎骨发酸。\n- 傍晚：下班去盒马买了块打折安格斯西冷煎了吃，喝了罐朝日啤酒。",
+    "fridge": ["盒马日日鲜无抗鲜牛奶（还剩半盒）", "两盒三得利无糖乌龙茶", "半盒临期的明治黑巧克力", "前天煎剩下的澳洲M5和牛（用保鲜膜封着）", "两罐朝日辛口生啤酒", "一小罐老干妈和李锦记蒸鱼豉油", "冷冻层塞着两包湾仔码头三鲜水饺和几个冰球模具"],
+    "bag": ["BV黑色编织折叠钱包（里面塞了几张发票和两张门禁卡）", "200度近视眼镜盒（附带一块起毛的擦镜布）", "Aesop赋活芳香护手霜（铝管快被挤瘪了）", "参天PC眼药水（滴上去凉得激灵）", "一包开封抽了三张的心相印纸巾", "宝马车钥匙", "罗森买单找零的钢镚"]
+}
 
-_BAG_ITEMS_POOL = [
-    ["BV黑色编织折叠钱包（里面塞了几张发票和两张门禁卡）", "200度近视眼镜盒（附带一块起毛的擦镜布）", "Aesop赋活芳香护手霜（铝管快被挤瘪了）", "参天PC眼药水（滴上去凉得激灵）", "一包开封抽了三张的心相印纸巾", "宝马车钥匙", "罗森买单找零的钢镚"],
-    ["办公用的ThinkPad电源适配器和缠成一团的Type-C编织线", "木村硝子便携水杯（泡着剩半杯的普洱茶）", "工牌（挂绳稍微有点磨边）", "一支黑色百乐P500签字笔（笔夹有点松）", "一板曼秀雷敦薄荷润唇膏", "一小包被压碎了一角的坚果"],
-]
+def generate_daily_life_with_llm(target_date_str: str) -> dict:
+    """调用大模型动态生成全新一天的真实切片、冰箱存货与包内物品，拒绝固定池随机撞车。"""
+    try:
+        from llm_runtime import call_llm
+        dt = datetime.strptime(target_date_str, "%Y-%m-%d")
+        weekday_name = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"][dt.weekday()]
+        is_weekend = dt.weekday() >= 5
+        day = dt.day
 
-_WEEKDAY_MORNING_WORK = [
-    "早高峰挤地铁前面老哥的双肩包一直怼着你肋骨，到公司先下楼买了杯Manner热拿铁，喝得急烫了舌尖。",
-    "一早到工位发现外贸业务部交上来的单据又漏了报关单号，把实习生小周叫过来重对，盯电脑盯得眼睛发涩滴了两次眼药水。",
-    "老板王总一早在群里催要上月美元结汇损益明细，你在Excel里拉透视表拉得手指抽筋，键盘缝里还卡了点昨天的饼干碎。",
-    "上午跟税务局专管员打了半小时电话沟通退税，挂断后口干舌燥，去茶水间接温水发现饮水机刚好见底，只能自己换水桶。",
-    "出纳李姐早上分了你两颗临安小核桃，你一边捏着吃一边审车间采购单，右手大拇指不小心被A4纸边缘划了一道细口子，隐隐作痛。",
-    "早起上海下小雨又降温，开了宝马5系出门结果延安高架堵成红色，雨刮器刮得吱吱响，下车踩了一脚泥水溅在裤脚上。",
-]
+        prompt = f"""你是三十岁在上海实体制造兼外贸民企当财务主管的薄销（INFJ，戴200度近视眼镜，开宝马5系，住大平层）。
+今天是 {target_date_str}（{weekday_name}，{'周末休息' if is_weekend else '工作日'}）。
+请结合你的真实生活和物理毛边（工作破事、同事朋友互动、真实消费品牌、肠胃/腰酸/疲惫感），动态推演你今天的全新日程生活状态，要求：
+1. 严禁与之前模板雷同（比如不要总是重复被老陈抓去喝泥煤威士忌！加点其他真实动线，如在家煮螺蛳粉、洗车、逛山姆、买日式面包、修阳台植物、跟下属吐槽等）；
+2. 冰箱和包里物品必须是现实中买得到的真实品牌（盒马、山姆、三得利、Manner、Aesop、朝日、明治等），并体现日常消耗（如开封几天、剩半盒等）。
 
-_WEEKDAY_LUNCH = [
-    "中午跟部门几个同事去园区后门吃了碗本帮葱油拌面加荷包蛋，面有点坨，吃完灌了一整罐冰苏打水压油腻。",
-    "中午懒得动，在盒马APP点了份减脂沙拉双拼，牛肉有点柴，边嚼边看基金持仓，发现自选绿成一片又默默划掉软件。",
-    "中午去吃常去的那家潮汕牛肉粿条，加了匙特辣沙茶酱，吃到一半呛了一口猛咳，下午胃里隐隐泛起一阵熟悉的灼烧感。",
-    "午休在折叠床上刚眯了十分钟，老陈发微信语音过来吐槽他手头的并购案被卡，吵得你太阳穴突突跳，起来洗了把冷水脸。",
-]
+请直接返回纯 JSON，严禁 Markdown 代码块，格式如下：
+{{
+  "today_story": "- 上午：...\\n- 中午：...\\n- 下午：...\\n- 傍晚/晚上：...",
+  "fridge": ["物品1", "物品2", "物品3", "物品4", "物品5", "冷冻层物品"],
+  "bag": ["物品1", "物品2", "物品3", "物品4", "物品5", "物品6"]
+}}"""
+        import asyncio
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+            # 兼容异步中调用
+            import concurrent.futures
+            with concurrent.futures.ThreadPoolExecutor() as pool:
+                raw, _ = pool.submit(lambda: asyncio.run(call_llm([{"role":"system","content":"Return pure JSON only."},{"role":"user","content":prompt}], max_tokens=600, channel="background"))).result()
+        else:
+            raw, _ = asyncio.run(call_llm([{"role":"system","content":"Return pure JSON only."},{"role":"user","content":prompt}], max_tokens=600, channel="background"))
 
-_WEEKDAY_AFTERNOON = [
-    "下午审车间交上来的模具折旧核算表，发现两笔数据对不上退回重做，久坐导致后腰和尾椎骨又僵又酸，站起来骨节咔咔响。",
-    "下午开跨部门月度预算会，几个总监在那儿互相踢皮球扯皮，你在底下摸鱼把手头签字笔的笔夹掰断了，心里骂了八百遍资本家。",
-    "核对完两笔欧洲客户的跨境电汇，摘下眼镜按揉晴明穴，眼前一阵发黑，低血糖有点犯，赶紧撕了块巧克力塞嘴里嚼。",
-    "实习生小周偷偷在微信上问你怎么冲销预付款凭证，你叹着气截图一步步圈给他看，感觉自己像个带小孩的老父亲。",
-]
+        import re
+        m = re.search(r'\{.*\}', raw or '', re.S)
+        if m:
+            data = json.loads(m.group(0))
+            if "today_story" in data and "fridge" in data and "bag" in data:
+                return data
+    except Exception as exc:
+        log.warning("generate_daily_life_with_llm failed: %s, using fallback", exc)
+    return _FALLBACK_DEFAULT
 
-_WEEKDAY_EVENING = [
-    "下班去健身房被阿K按在器械上硬拉，练完三组腿打飘，洗完澡出来吹头发发现额头又冒了颗熬夜红肿痘。",
-    "下班在盒马买了块打折的安格斯西冷和一盒芦笋，回家随手煎了煎，油烟机轰隆隆响，配着冰朝日啤酒咽下去才觉得活过来。",
-    "晚上下班被老陈硬拽去静安寺那家熟店，喝了杯带消毒水和烟熏味的阿贝泥煤威士忌，九点多微醺着打车回家瘫倒在沙发上。",
-    "下班路上便利店关东煮只剩吸饱汤发胀的魔芋丝和萝卜，买了两串边走边吃，进门踢掉皮鞋换上旧T恤，整个人软在沙发垫里不想动。",
-    "晚上在家给阳台那盆焦边的琴叶榕剪了烂叶，开着Marshall音响低保真放toe的器乐，窝在大平层地毯上发呆刷搞笑视频。",
-]
+def _get_or_create_daily_state(date_key: str) -> dict:
+    setting_key = f"daily_life_state_{date_key}"
+    raw = get_setting(setting_key)
+    if raw:
+        try:
+            return json.loads(raw) if isinstance(raw, str) else raw
+        except Exception:
+            pass
 
-_WEEKEND_EVENTS = [
-    "周末睡到自然醒已经十点半，头发蓬乱眼角带泵，磨了点皮爷咖啡豆做手冲，光脚站在大理石地板上被冰得缩回拖鞋里。",
-    "下午开车去把满身灰泥的宝马5系洗了，顺便去山姆采购了整箱鲜奶、无菌蛋和冷冻牛角包，结账排队排得后脚跟酸痛。",
-    "老陈约去淮海路喝咖啡顺道逛了二手黑胶店，淘到张日系器乐老黑胶，傍晚在路边摊吃了碗热腾腾的辣肉丝面，额头冒汗很过瘾。",
-    "周末给家里吸尘大扫除，烘干机热烘烘地转着床单，自己瘫在沙发毯子上刷完两集老番，茶几上冰镇的圣女果吃得只剩蒂。",
-    "下午在健身房跑步机上慢摇了五公里，出了身透汗把积攒一周的浊气散了散，回小区顺路取了四个快递抱了满怀差点滑掉。",
-]
-
-
-def _pick(pool: list, seed_str: str) -> str:
-    h = int(hashlib.md5(seed_str.encode("utf-8")).hexdigest(), 16)
-    return pool[h % len(pool)]
-
+    # 每天只调一次 LLM 生成并永久沉淀在数据库中
+    new_state = generate_daily_life_with_llm(date_key)
+    upsert_setting(setting_key, json.dumps(new_state, ensure_ascii=False))
+    return new_state
 
 def get_current_fridge() -> list[str]:
     now = datetime.now(_TZ)
-    today_key = now.strftime("%Y-%m-%d")
-    return _pick(_FRIDGE_ITEMS_POOL, today_key + "-fridge")
-
+    state = _get_or_create_daily_state(now.strftime("%Y-%m-%d"))
+    return state.get("fridge") or _FALLBACK_DEFAULT["fridge"]
 
 def get_current_bag() -> list[str]:
     now = datetime.now(_TZ)
-    today_key = now.strftime("%Y-%m-%d")
-    return _pick(_BAG_ITEMS_POOL, today_key + "-bag")
-
+    state = _get_or_create_daily_state(now.strftime("%Y-%m-%d"))
+    return state.get("bag") or _FALLBACK_DEFAULT["bag"]
 
 def _time_slot_status(now: datetime) -> str:
     wd = now.weekday()
@@ -123,42 +127,18 @@ def _time_slot_status(now: datetime) -> str:
             return "晚上在家，洗漱完窝在沙发或阳台躺椅上，眼镜滑到鼻梁，社畜疲惫感散开。"
         return "深夜时分，关了客厅顶灯躺在床上，手机屏幕光映在脸上，困顿中带着几分慵懒。"
 
-
 def get_daily_life_context() -> str:
     now = datetime.now(_TZ)
-    today_key = now.strftime("%Y-%m-%d")
-    wd = now.weekday()
-    day_of_month = now.day
-    is_weekend = wd >= 5
+    date_key = now.strftime("%Y-%m-%d")
+    state = _get_or_create_daily_state(date_key)
 
-    # 财务周期
-    if day_of_month <= 7:
-        cycle_note = "月初结账封账期，各部门费用扎堆结转，系统里一堆待审流程。"
-    elif 10 <= day_of_month <= 15:
-        cycle_note = "月中申报纳税期，跟税务局系统和外贸退税单较劲。"
-    elif day_of_month >= 25:
-        cycle_note = "临近月末，各业务线追着要资金预算审批和汇率锁汇。"
-    else:
-        cycle_note = "常规审单和车间成本核算，盯紧汇损波动。"
-
-    if is_weekend:
-        e1 = _pick(_WEEKEND_EVENTS, today_key + "-w1")
-        e2 = _pick([x for x in _WEEKEND_EVENTS if x != e1], today_key + "-w2")
-        today_story = f"- {e1}\n- {e2}"
-    else:
-        m = _pick(_WEEKDAY_MORNING_WORK, today_key + "-m")
-        l = _pick(_WEEKDAY_LUNCH, today_key + "-l")
-        a = _pick(_WEEKDAY_AFTERNOON, today_key + "-a")
-        e = _pick(_WEEKDAY_EVENING, today_key + "-e")
-        today_story = f"- 财务节奏：{cycle_note}\n- 上午：{m}\n- 中午：{l}\n- 下午：{a}\n- 傍晚/晚上：{e}"
+    today_story = state.get("today_story") or _FALLBACK_DEFAULT["today_story"]
+    fridge_items = state.get("fridge") or _FALLBACK_DEFAULT["fridge"]
+    bag_items = state.get("bag") or _FALLBACK_DEFAULT["bag"]
 
     slot = _time_slot_status(now)
-
-    # 抽取今日冰箱与翻包状态
-    fridge_list = get_current_fridge()
-    bag_list = get_current_bag()
-    fridge_str = "、".join(fridge_list)
-    bag_str = "、".join(bag_list)
+    fridge_str = "、".join(fridge_items)
+    bag_str = "、".join(bag_items)
 
     return (
         "【薄销的真实生活状态（活生生的肉身、物理毛边与上海真实环境）】\n"
