@@ -65,10 +65,9 @@ def _filter_for_google(messages: list) -> list:
     for m in messages:
         c = m.get("content")
         if isinstance(c, str):
-            # 将极端敏感动词转为隐晦的文学占有/情欲表述
+            # 将极端敏感动词转为文学占有/情欲表述（保留自然表达，不屏蔽解剖部位口嗨）
             t = c.replace("操凌冥", "狠狠占有凌冥").replace("非常想操", "极度渴望占有").replace("想操", "想占有")
             t = t.replace("做爱", "亲密温存").replace("弄死", "欺负透").replace("贱狗", "专属仆从")
-            t = t.replace("几把", "身体").replace("大S", "支配者")
             clean_messages.append({**m, "content": t})
         elif isinstance(c, list):
             new_parts = []
@@ -77,7 +76,6 @@ def _filter_for_google(messages: list) -> list:
                     t = p.get("text", "")
                     t = t.replace("操凌冥", "狠狠占有凌冥").replace("非常想操", "极度渴望占有").replace("想操", "想占有")
                     t = t.replace("做爱", "亲密温存").replace("弄死", "欺负透").replace("贱狗", "专属仆从")
-                    t = t.replace("几把", "身体").replace("大S", "支配者")
                     new_parts.append({**p, "text": t})
                 else:
                     new_parts.append(p)
