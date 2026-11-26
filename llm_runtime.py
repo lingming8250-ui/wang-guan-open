@@ -98,7 +98,8 @@ async def _once(cfg, messages, max_tokens, tools, extra_body, channel, on_delta,
     tc_map = {}
     got_done = False
 
-    async with httpx.AsyncClient(timeout=httpx.Timeout(connect=15, read=90, write=15, pool=15), http2=False) as client:
+    # 针对中转站晚高峰卡死，把 read 超时从 90s 缩短至 25s，一旦死等立刻抛异常切备用，绝不卡死两分钟！
+    async with httpx.AsyncClient(timeout=httpx.Timeout(connect=10, read=25, write=10, pool=10), http2=False) as client:
         async with client.stream("POST", cfg["base_url"] + "/chat/completions", headers=headers, json=payload) as resp:
             if resp.status_code >= 400:
                 body = (await resp.aread()).decode(errors="ignore")[:300]
