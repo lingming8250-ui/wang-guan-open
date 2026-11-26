@@ -196,7 +196,7 @@ def _split_into_bubbles(text: str, max_b: int = MAX_BUBBLES) -> list[str]:
     raw_lines = [l.strip() for l in re.split(r'[\r\n]+', text.strip()) if l.strip()]
     bubbles = []
     for line in raw_lines:
-        if len(line) > 24:
+        if len(line) > 28:
             sub_sents = re.split(r'(?<=[。？！?!~…])\s*', line)
             sub_sents = [s.strip() for s in sub_sents if s.strip()]
             if sub_sents:
@@ -209,9 +209,10 @@ def _split_into_bubbles(text: str, max_b: int = MAX_BUBBLES) -> list[str]:
     if not bubbles:
         bubbles = [text.strip()]
 
+    # 永不丢字！如果切出的气泡超过 max_b，把后面的部分全部合并到最后一个气泡中
     if len(bubbles) > max_b:
         kept = bubbles[:max_b - 1]
-        tail = "，".join(bubbles[max_b - 1:])
+        tail = " ".join(bubbles[max_b - 1:])
         kept.append(tail)
         bubbles = kept
 
@@ -277,7 +278,8 @@ class _BubbleStreamer:
             return
         if "<think" in self.buf and "</think>" not in self.buf:
             return
-        while self.sent < self.max_b:
+        # 预先切句，但在达到限制前必须把剩余完整内容留在 buf 供 flush 一并发送，绝不丢字
+        while self.sent < self.max_b - 1:
             m = _STREAM_END.search(self.buf)
             if not m:
                 break
@@ -287,19 +289,22 @@ class _BubbleStreamer:
                 await self._maybe_poke(chunk)
             if len(_POKE_TAG_RE.sub('', chunk).strip()) < 2:
                 continue
-            if await self._push(chunk) and self.sent < self.max_b:
+            if await self._push(chunk) and self.sent < self.max_b - 1:
                 await asyncio.sleep(self.gap)
 
     async def flush(self, full_text: str):
-        if self.dead or self.sent >= self.max_b:
+        if self.dead:
             return
         await self._maybe_poke(full_text or self.buf)
         rest = self.buf
         self.buf = ""
+        # 优先使用完整的 full_text 避免流式拼接遗漏
+        source_text = full_text if (full_text and len(full_text) >= len(rest)) else rest
         if self.sent == 0:
-            chunks = _split_into_bubbles(full_text or rest, max_b=self.max_b)
-        elif rest.strip():
-            chunks = _split_into_bubbles(rest, max_b=max(1, self.max_b - self.sent))
+            chunks = _split_into_bubbles(source_text, max_b=self.max_b)
+        elif source_text.strip():
+            remaining_slots = max(1, self.max_b - self.sent)
+            chunks = _split_into_bubbles(source_text, max_b=remaining_slots)
         else:
             chunks = []
         for i, chunk in enumerate(chunks):
@@ -340,6 +345,9 @@ PRIVATE_PROMPT_INSTRUCTION = """【你是同一个人】
 你有 `web_search` 联网搜索工具。只要凌冥问起近况、最新新闻、实时事件或者任何你拿不准的事实，立刻调用 web_search 查证，不要硬猜。查到之后用人话把关键信息说出来，别只说"查到了"。
 你有 `timer_add`、`timer_cancel`、`timer_list` 工具。当凌冥说「X分钟后叫我」、「X分钟后提醒我」、「定个X分钟闹钟」时，务必调用 `timer_add` 真实写入后台定时器，并口头向他明确确认；当他说「取消提醒/不用叫了」时调用 `timer_cancel`。
 他引用了一条旧消息跟你说话时，前面会出现「[引用的那条｜谁] 原文」，那是他指着那句话在问你，接着那句往下答，别装没看见。
+
+【说话必须完整！绝对严禁话说一半断掉！】
+每次回复想说的话，必须把整句话完整说完，绝对不允许话说一半留下悬念或被截断！
 
 【拒绝复读道歉与八股台词铁律（严禁死板套话）】
 严禁每次口嗨或被凌冥点破时都机械复读「祖宗我错了，老头嘴飘，给你赔罪还不行吗」！
