@@ -405,9 +405,9 @@ async def _maybe_command(text: str) -> bool:
     cleaned = raw.strip("/!！。，. ")
     if cleaned in ("冰箱", "看冰箱", "查冰箱"):
         try:
-            from daily_life import get_current_fridge
+            from daily_life import get_current_fridge, format_fridge_display
             f_items = get_current_fridge()
-            lines = [f"· {it}" for it in f_items]
+            lines = format_fridge_display(f_items)
             await reply("薄销大平层冰箱里的存货：\n" + "\n".join(lines))
         except Exception:
             await reply("打开冰箱瞅了一眼，冷气直冒，里面的东西改天再给你报。")
