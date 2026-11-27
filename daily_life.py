@@ -1,19 +1,17 @@
 """薄销的每日真实生活切片、固定人际圈与实时时间段状态。
 
-升级：
-引入【LLM 每日凌晨动态生活推演引擎】与数据库持久化缓存！
-每天凌晨 04:00 由 LLM 结合当周真实日程、前一天残留（蝴蝶效应）自主生成今天的：
-1. 真实生活切片（上午/中午/下午/傍晚的具体真实事件与倒霉/确幸）
-2. 冰箱当前真实存货（冷藏与冷冻品牌实物）
-3. 随身公文包里当天的物件
-生成后存入数据库 bot_settings 表（key: `daily_life_state_YYYY-MM-DD`），一天内保持一致，绝不再撞车复读！
+修复：
+原 `generate_daily_life_with_llm` 在同步函数中用 asyncio.run/get_event_loop 遇到已运行的事件循环报错，
+导致一直触发 fallback 降级返回静态兜底值。
+现改为轻量直接 requests 同步请求大模型接口推演，生成全新的每日真实切片、冰箱物品与包内随身物！
 """
 from __future__ import annotations
-import json, logging
+import json, logging, re, requests
 from datetime import datetime
 from zoneinfo import ZoneInfo
 from app_config import DEFAULT_TIMEZONE
 from storage import get_setting, upsert_setting
+from llm_channels import get_config
 
 log = logging.getLogger(__name__)
 _TZ = ZoneInfo(DEFAULT_TIMEZONE)
@@ -33,13 +31,15 @@ _FALLBACK_DEFAULT = {
 }
 
 def generate_daily_life_with_llm(target_date_str: str) -> dict:
-    """调用大模型动态生成全新一天的真实切片、冰箱存货与包内物品，拒绝固定池随机撞车。"""
+    """直接同步调用上游 LLM 生成当天全新的日程、冰箱物品与包内物件，避开 asyncio 冲突。"""
     try:
-        from llm_runtime import call_llm
+        cfg = get_config("background")
+        if not cfg or not cfg.get("base_url") or not cfg.get("api_key"):
+            cfg = get_config("chat")
+
         dt = datetime.strptime(target_date_str, "%Y-%m-%d")
         weekday_name = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"][dt.weekday()]
         is_weekend = dt.weekday() >= 5
-        day = dt.day
 
         prompt = f"""你是三十岁在上海实体制造兼外贸民企当财务主管的薄销（INFJ，戴200度近视眼镜，开宝马5系，住大平层）。
 今天是 {target_date_str}（{weekday_name}，{'周末休息' if is_weekend else '工作日'}）。
@@ -53,22 +53,33 @@ def generate_daily_life_with_llm(target_date_str: str) -> dict:
   "fridge": ["物品1", "物品2", "物品3", "物品4", "物品5", "冷冻层物品"],
   "bag": ["物品1", "物品2", "物品3", "物品4", "物品5", "物品6"]
 }}"""
-        import asyncio
-        loop = asyncio.get_event_loop()
-        if loop.is_running():
-            # 兼容异步中调用
-            import concurrent.futures
-            with concurrent.futures.ThreadPoolExecutor() as pool:
-                raw, _ = pool.submit(lambda: asyncio.run(call_llm([{"role":"system","content":"Return pure JSON only."},{"role":"user","content":prompt}], max_tokens=600, channel="background"))).result()
-        else:
-            raw, _ = asyncio.run(call_llm([{"role":"system","content":"Return pure JSON only."},{"role":"user","content":prompt}], max_tokens=600, channel="background"))
+        headers = {
+            "Authorization": f"Bearer {cfg['api_key']}",
+            "Content-Type": "application/json"
+        }
+        for k, v in (cfg.get("extra_headers") or {}).items():
+            if str(k).lower() not in ("authorization", "content-type"):
+                headers[str(k)] = str(v)
 
-        import re
-        m = re.search(r'\{.*\}', raw or '', re.S)
-        if m:
-            data = json.loads(m.group(0))
-            if "today_story" in data and "fridge" in data and "bag" in data:
-                return data
+        payload = {
+            "model": cfg.get("model") or "[AN]gemini-4-hydrogen-low",
+            "messages": [
+                {"role": "system", "content": "Return pure JSON only."},
+                {"role": "user", "content": prompt}
+            ],
+            "max_tokens": 600,
+            "stream": False
+        }
+        resp = requests.post(f"{cfg['base_url'].rstrip('/')}/chat/completions", headers=headers, json=payload, timeout=20)
+        if resp.status_code == 200:
+            data_resp = resp.json()
+            content = data_resp["choices"][0]["message"]["content"].strip()
+            m = re.search(r'\{.*\}', content, re.S)
+            if m:
+                parsed = json.loads(m.group(0))
+                if "today_story" in parsed and "fridge" in parsed and "bag" in parsed:
+                    log.info("generated dynamic daily life for %s via LLM successfully", target_date_str)
+                    return parsed
     except Exception as exc:
         log.warning("generate_daily_life_with_llm failed: %s, using fallback", exc)
     return _FALLBACK_DEFAULT
@@ -78,11 +89,13 @@ def _get_or_create_daily_state(date_key: str) -> dict:
     raw = get_setting(setting_key)
     if raw:
         try:
-            return json.loads(raw) if isinstance(raw, str) else raw
+            val = json.loads(raw) if isinstance(raw, str) else raw
+            # 如果存的是兜底的旧 fallback，尝试现场重新由 LLM 生成覆盖
+            if val.get("today_story") != _FALLBACK_DEFAULT["today_story"]:
+                return val
         except Exception:
             pass
 
-    # 每天只调一次 LLM 生成并永久沉淀在数据库中
     new_state = generate_daily_life_with_llm(date_key)
     upsert_setting(setting_key, json.dumps(new_state, ensure_ascii=False))
     return new_state
