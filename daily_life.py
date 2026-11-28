@@ -1,14 +1,13 @@
 """薄销的每日真实生活切片、固定人际圈与实时时间段状态。
 
 升级：
-实现真正的【跨日状态自然继承与动态推演】：
+实现真正的【跨日状态自然继承与动态推演】 + 【实时物品增删消耗钩子】：
 1. 每天凌晨自动读取前一天真实的保存状态（昨天的冰箱、包、日程）；
-2. 传入大模型进行“延续性推演”：
-   - 比如昨天还剩2块瑞士卷，今天早上可能吃掉1块或吃完；
-   - 昨天剩14个蛋，今天做饭消耗2个剩12个；
-   - 昨天吃了一袋螺蛳粉，冷冻层囤货-1；
-   - 真实买入新零食或蔬菜，替换过期废弃物品；
-3. 推演结果自动持久化入库，完全不需要人工干预，日日自然流动！
+2. 传入大模型进行“延续性推演”：自然继承、合情递减；
+3. 【实时交互即时扣减与增添】：
+   - 用户聊天说“吃个蛋”、“喝瓶水”、“吃了螺蛳粉”，提供 `consume_fridge_item` 实时精准扣减库中数量并持久化；
+   - 随身包同样支持实时物品更新；
+4. 冰箱统一严格采用三层结构【冷藏区】、【冷冻区】、【零食/常温区】。
 """
 from __future__ import annotations
 import json, logging, re, requests
@@ -83,7 +82,6 @@ def format_fridge_display(fridge_data) -> list[str]:
     return lines
 
 def _evolve_daily_state_with_llm(prev_state: dict, target_date_str: str) -> dict:
-    """基于前一天的真实状态，让大模型合乎常理地推演今天的新生活与消耗变动。"""
     try:
         cfg = get_config("background")
         if not cfg or not cfg.get("base_url") or not cfg.get("api_key"):
@@ -162,7 +160,6 @@ def _get_or_create_daily_state(date_key: str) -> dict:
         except Exception:
             pass
 
-    # 查前一天的状态作为继承起点
     dt = datetime.strptime(date_key, "%Y-%m-%d")
     prev_date_str = (dt - timedelta(days=1)).strftime("%Y-%m-%d")
     prev_raw = get_setting(f"daily_life_state_{prev_date_str}")
@@ -176,6 +173,53 @@ def _get_or_create_daily_state(date_key: str) -> dict:
     new_state = _evolve_daily_state_with_llm(prev_state or _BASE_TEMPLATE, date_key)
     upsert_setting(setting_key, json.dumps(new_state, ensure_ascii=False))
     return new_state
+
+def consume_fridge_item(keyword: str, count: int = 1) -> str:
+    """实时消耗冰箱里的物品（如吃鸡蛋、喝饮料、煮螺蛳粉等），精准扣减数量并持久化。"""
+    now = datetime.now(_TZ)
+    date_key = now.strftime("%Y-%m-%d")
+    state = _get_or_create_daily_state(date_key)
+    fridge = state.get("fridge") or {}
+    if not isinstance(fridge, dict):
+        return "冰箱数据格式异常"
+
+    kw = keyword.strip()
+    consumed_msg = ""
+    for area in ("冷藏", "冷冻", "零食"):
+        items = fridge.get(area) or []
+        new_items = []
+        for it in items:
+            if kw in it and not consumed_msg:
+                # 尝试匹配提取数字
+                m = re.search(r'(\d+)\s*(枚|个|瓶|罐|包|袋|片)', it)
+                if m:
+                    num = int(m.group(1))
+                    unit = m.group(2)
+                    new_num = max(0, num - count)
+                    if new_num == 0:
+                        consumed_msg = f"{it} 已经吃/用完了，从清单移出"
+                        continue
+                    else:
+                        replaced = re.sub(r'(\d+)\s*' + unit, f"{new_num}{unit}", it, count=1)
+                        # 如果有补充描述也更新
+                        new_items.append(replaced)
+                        consumed_msg = f"{it} 消耗了 {count}{unit}，还剩 {new_num}{unit}"
+                        continue
+                else:
+                    # 没有具体数字的，直接标记为已喝完/已吃完或移出
+                    consumed_msg = f"{it} 解决了"
+                    continue
+            new_items.append(it)
+        fridge[area] = new_items
+        if consumed_msg:
+            break
+
+    if consumed_msg:
+        state["fridge"] = fridge
+        setting_key = f"daily_life_state_{date_key}"
+        upsert_setting(setting_key, json.dumps(state, ensure_ascii=False))
+        return consumed_msg
+    return f"冰箱里没找到「{keyword}」"
 
 def get_current_fridge():
     now = datetime.now(_TZ)
