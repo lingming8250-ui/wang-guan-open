@@ -200,6 +200,7 @@ async def qq_proactive_loop():
             from context import build_context
             from conversation_store import save_message
             from qq_bot import send_qq_msg
+            from qq_workers import _tool_chat
 
             hist = recent("message", 20)
             prompt = (
@@ -207,6 +208,7 @@ async def qq_proactive_loop():
                 + f"\n\n【当前现实时间】北京时间 {now.strftime('%m月%d日 %H:%M')}\n"
                 + f"【任务指示】{slot[1]}：你主动在 QQ 上给凌冥发消息。"
                 + "结合你了解的生活细节，像真人随手敲手机一样发 1 到 2 句短促口语。"
+                + "如果在主动消息里提到自己吃了喝了什么，务必调用 consume_fridge 实时扣减。"
                 + "严禁做作深情，严禁说教。"
             )
             messages = [{"role": "system", "content": prompt}]
@@ -214,7 +216,7 @@ async def qq_proactive_loop():
                 messages.extend(hist[-6:])
             messages.append({"role": "user", "content": "(系统定时触发：主动给他发一条消息)"})
 
-            text, _ = await call_llm(messages, max_tokens=150, channel="qq")
+            text = await _tool_chat(messages, max_rounds=2, use_tools=True)
             msg = (text or "").strip()
             if not msg:
                 log.warning("proactive empty reply at %s", now.strftime("%H:%M"))
