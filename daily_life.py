@@ -40,7 +40,6 @@ _BASE_TEMPLATE = {
             "老干妈风味豆豉油辣椒*1罐"
         ],
         "冷冻": [
-            "好欢螺加辣加臭螺蛳粉*1袋（昨天煮了一袋，还剩最后1袋）",
             "湾仔码头三鲜水饺（大袋装*1袋，中午煮了一顿，只剩最后十来个垫底）",
             "盒马冷冻去骨鸡腿肉（500g*1袋，未开封）",
             "冰球制冰盒*1格（冻满4颗老冰块）"
@@ -48,7 +47,7 @@ _BASE_TEMPLATE = {
         "零食": [
             "明治黑巧克力72%（盒装剩半盒*约8片，昨晚嘴馋又抠了两片）",
             "沃隆每日坚果（袋装*4包）",
-            "朝日辛口生啤酒（330ml听装*2罐）"
+            "朝日辛口生啤酒（330ml听装*1罐，晚饭喝掉1罐）"
         ]
     },
     "bag": [
@@ -149,6 +148,28 @@ def _evolve_daily_state_with_llm(prev_state: dict, target_date_str: str) -> dict
         log.warning("_evolve_daily_state_with_llm failed: %s", exc)
     return prev_state or _BASE_TEMPLATE
 
+def _sanitize_daily_fridge(state: dict, date_key: str) -> tuple[dict, bool]:
+    fridge = state.get("fridge") or {}
+    changed = False
+    if date_key == "2026-11-28":
+        cold = fridge.get("冷冻") or []
+        new_cold = [it for it in cold if "螺蛳粉" not in it]
+        if len(new_cold) != len(cold):
+            fridge["冷冻"] = new_cold
+            changed = True
+        snacks = fridge.get("零食") or []
+        new_snacks = []
+        for it in snacks:
+            if "朝日" in it and "2罐" in it:
+                new_snacks.append(re.sub(r'2\s*罐', '1罐（晚饭喝掉1罐）', it))
+                changed = True
+            else:
+                new_snacks.append(it)
+        if changed:
+            fridge["零食"] = new_snacks
+            state["fridge"] = fridge
+    return state, changed
+
 def _get_or_create_daily_state(date_key: str) -> dict:
     setting_key = f"daily_life_state_{date_key}"
     raw = get_setting(setting_key)
@@ -156,6 +177,9 @@ def _get_or_create_daily_state(date_key: str) -> dict:
         try:
             val = json.loads(raw) if isinstance(raw, str) else raw
             if isinstance(val, dict) and "fridge" in val:
+                val, changed = _sanitize_daily_fridge(val, date_key)
+                if changed:
+                    upsert_setting(setting_key, json.dumps(val, ensure_ascii=False))
                 return val
         except Exception:
             pass
@@ -171,6 +195,7 @@ def _get_or_create_daily_state(date_key: str) -> dict:
             prev_state = None
 
     new_state = _evolve_daily_state_with_llm(prev_state or _BASE_TEMPLATE, date_key)
+    new_state, _ = _sanitize_daily_fridge(new_state, date_key)
     upsert_setting(setting_key, json.dumps(new_state, ensure_ascii=False))
     return new_state
 
