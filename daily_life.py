@@ -1,13 +1,13 @@
 """薄销的每日真实生活切片、固定人际圈与实时时间段状态。
 
 升级：
-实现真正的【跨日状态自然继承与动态推演】 + 【实时物品增删消耗钩子】：
+实现真正的【跨日状态自然继承与动态推演】 + 【物理动线闭环的实时增删钩子】：
 1. 每天凌晨自动读取前一天真实的保存状态（昨天的冰箱、包、日程）；
 2. 传入大模型进行“延续性推演”：自然继承、合情递减；
-3. 【实时交互即时扣减与增添】：
-   - 用户聊天说“吃个蛋”、“喝瓶水”、“吃了螺蛳粉”，提供 `consume_fridge_item` 实时精准扣减库中数量并持久化；
-   - 随身包同样支持实时物品更新；
-4. 冰箱统一严格采用三层结构【冷藏区】、【冷冻区】、【零食/常温区】。
+3. 【严格物理时空与动线铁律】：
+   - 你让薄销去买东西，他【不会立刻瞬移】塞进冰箱！
+   - 必须经历物理动线：说去买 -> 真的出门到了便利店/盒马/超市付款拿到手里（此时在手提袋或包里）-> 回到家进门换鞋 -> 真正拉开冰箱塞进冷藏/冷冻/零食区，才能调用工具入库！
+4. 支持 `add_fridge_item`（回到家放进冰箱）、`consume_fridge_item`（吃喝消耗）与 `update_bag_item`（随身包实时增减）。
 """
 from __future__ import annotations
 import json, logging, re, requests
@@ -190,7 +190,6 @@ def consume_fridge_item(keyword: str, count: int = 1) -> str:
         new_items = []
         for it in items:
             if kw in it and not consumed_msg:
-                # 尝试匹配提取数字
                 m = re.search(r'(\d+)\s*(枚|个|瓶|罐|包|袋|片)', it)
                 if m:
                     num = int(m.group(1))
@@ -201,12 +200,10 @@ def consume_fridge_item(keyword: str, count: int = 1) -> str:
                         continue
                     else:
                         replaced = re.sub(r'(\d+)\s*' + unit, f"{new_num}{unit}", it, count=1)
-                        # 如果有补充描述也更新
                         new_items.append(replaced)
                         consumed_msg = f"{it} 消耗了 {count}{unit}，还剩 {new_num}{unit}"
                         continue
                 else:
-                    # 没有具体数字的，直接标记为已喝完/已吃完或移出
                     consumed_msg = f"{it} 解决了"
                     continue
             new_items.append(it)
@@ -220,6 +217,54 @@ def consume_fridge_item(keyword: str, count: int = 1) -> str:
         upsert_setting(setting_key, json.dumps(state, ensure_ascii=False))
         return consumed_msg
     return f"冰箱里没找到「{keyword}」"
+
+def add_fridge_item(area: str, item_name: str) -> str:
+    """买回了东西并真正回到家放进冰箱后，将新物品加入冰箱清单（冷藏/冷冻/零食）。"""
+    now = datetime.now(_TZ)
+    date_key = now.strftime("%Y-%m-%d")
+    state = _get_or_create_daily_state(date_key)
+    fridge = state.get("fridge") or {}
+    if not isinstance(fridge, dict):
+        return "冰箱数据格式异常"
+
+    target_area = "冷藏"
+    if "冷冻" in area:
+        target_area = "冷冻"
+    elif "零食" in area or "常温" in area:
+        target_area = "零食"
+
+    items = fridge.get(target_area) or []
+    clean_name = item_name.strip()
+    if clean_name:
+        items.append(clean_name)
+        fridge[target_area] = items
+        state["fridge"] = fridge
+        setting_key = f"daily_life_state_{date_key}"
+        upsert_setting(setting_key, json.dumps(state, ensure_ascii=False))
+        return f"已将「{clean_name}」放入冰箱【{target_area}区】"
+    return "物品名称为空"
+
+def update_bag_item(action: str, item_name: str) -> str:
+    """随身包物品实时增减（买入随身携带、或用完拿走）。"""
+    now = datetime.now(_TZ)
+    date_key = now.strftime("%Y-%m-%d")
+    state = _get_or_create_daily_state(date_key)
+    bag = state.get("bag") or []
+    clean_name = item_name.strip()
+    if not clean_name:
+        return "物品名称为空"
+
+    if action == "add":
+        bag.append(clean_name)
+        state["bag"] = bag
+        upsert_setting(f"daily_life_state_{date_key}", json.dumps(state, ensure_ascii=False))
+        return f"随身包里放入了「{clean_name}」"
+    elif action in ("remove", "use"):
+        new_bag = [it for it in bag if clean_name not in it]
+        state["bag"] = new_bag
+        upsert_setting(f"daily_life_state_{date_key}", json.dumps(state, ensure_ascii=False))
+        return f"随身包里移出了「{clean_name}」"
+    return "未知操作"
 
 def get_current_fridge():
     now = datetime.now(_TZ)
